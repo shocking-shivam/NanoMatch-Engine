@@ -1,0 +1,14 @@
+build*/
+FlameGraph/
+*.csv
+*.txt
+perf.data*
+
+# Explicitly allow docs assets
+!docs/*.csv
+!docs/*.svg
+
+data/
+generate_itch
+itch_parser
+docs/bench.csv.stl
