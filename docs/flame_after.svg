@@ -1,0 +1,3306 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="694" onload="init(evt)" viewBox="0 0 1200 694" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="694.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="677" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="677" > </text>
+<g id="frames">
+<g >
+<title>hv_stimer0_isr (25,867,721 samples, 0.13%)</title><rect x="745.6" y="389" width="1.6" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="748.57" y="399.5" ></text>
+</g>
+<g >
+<title>update_curr_se (34,718,773 samples, 0.18%)</title><rect x="961.8" y="469" width="2.1" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="964.80" y="479.5" ></text>
+</g>
+<g >
+<title>Book::balance (27,457,280 samples, 0.14%)</title><rect x="68.4" y="501" width="1.7" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="71.37" y="511.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getParent (36,951,772 samples, 0.19%)</title><rect x="758.3" y="485" width="2.3" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="761.29" y="495.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (62,948,362 samples, 0.33%)</title><rect x="281.5" y="581" width="3.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="284.53" y="591.5" ></text>
+</g>
+<g >
+<title>pick_next_entity.isra.0 (176,656,632 samples, 0.92%)</title><rect x="946.8" y="485" width="10.9" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="949.83" y="495.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getLeftChild (181,641,335 samples, 0.94%)</title><rect x="747.2" y="437" width="11.1" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="750.15" y="447.5" ></text>
+</g>
+<g >
+<title>free_unref_page_list (40,188,278 samples, 0.21%)</title><rect x="531.0" y="325" width="2.4" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="533.98" y="335.5" ></text>
+</g>
+<g >
+<title>std::ostream&amp; std::ostream::_M_insert&lt;long&gt; (72,697,374 samples, 0.38%)</title><rect x="309.7" y="597" width="4.5" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="312.69" y="607.5" ></text>
+</g>
+<g >
+<title>selinux_file_permission (29,581,405 samples, 0.15%)</title><rect x="105.4" y="341" width="1.8" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="108.38" y="351.5" ></text>
+</g>
+<g >
+<title>syscall_return_via_sysret (33,424,982 samples, 0.17%)</title><rect x="448.3" y="437" width="2.1" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="451.31" y="447.5" ></text>
+</g>
+<g >
+<title>hv_stimer0_isr (32,026,042 samples, 0.17%)</title><rect x="277.7" y="485" width="1.9" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="280.66" y="495.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (40,188,278 samples, 0.21%)</title><rect x="531.0" y="485" width="2.4" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="533.98" y="495.5" ></text>
+</g>
+<g >
+<title>__x64_sys_sched_yield (2,594,464,140 samples, 13.48%)</title><rect x="872.9" y="565" width="159.1" height="15.0" fill="rgb(209,18,4)" rx="2" ry="2" />
+<text  x="875.92" y="575.5" >__x64_sys_sched_yield</text>
+</g>
+<g >
+<title>std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::_M_insert_int&lt;long&gt; (36,788,513 samples, 0.19%)</title><rect x="311.9" y="581" width="2.3" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="314.90" y="591.5" ></text>
+</g>
+<g >
+<title>file_tty_write.isra.0 (1,340,065,183 samples, 6.96%)</title><rect x="112.7" y="341" width="82.2" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="115.74" y="351.5" >file_tty_..</text>
+</g>
+<g >
+<title>native_send_call_func_single_ipi (61,888,675 samples, 0.32%)</title><rect x="185.8" y="149" width="3.8" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="188.80" y="159.5" ></text>
+</g>
+<g >
+<title>update_min_vruntime (68,622,582 samples, 0.36%)</title><rect x="998.7" y="501" width="4.2" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="1001.74" y="511.5" ></text>
+</g>
+<g >
+<title>pty_write (530,025,997 samples, 2.75%)</title><rect x="381.2" y="293" width="32.5" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="384.17" y="303.5" >pt..</text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (31,836,238 samples, 0.17%)</title><rect x="665.0" y="437" width="2.0" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="668.02" y="447.5" ></text>
+</g>
+<g >
+<title>Book::insert (27,457,280 samples, 0.14%)</title><rect x="68.4" y="517" width="1.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="71.37" y="527.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (133,239,598 samples, 0.69%)</title><rect x="1150.5" y="549" width="8.2" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1153.52" y="559.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (55,714,747 samples, 0.29%)</title><rect x="546.3" y="485" width="3.4" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="549.30" y="495.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (96,786,119 samples, 0.50%)</title><rect x="736.1" y="501" width="5.9" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="739.09" y="511.5" ></text>
+</g>
+<g >
+<title>__calc_delta.constprop.0 (69,648,924 samples, 0.36%)</title><rect x="940.4" y="485" width="4.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="943.35" y="495.5" ></text>
+</g>
+<g >
+<title>queue_work_on (569,747,021 samples, 2.96%)</title><rect x="154.7" y="277" width="34.9" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="157.65" y="287.5" >qu..</text>
+</g>
+<g >
+<title>baseline::Book::insert (29,882,219 samples, 0.16%)</title><rect x="794.6" y="421" width="1.8" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="797.60" y="431.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (89,396,785 samples, 0.46%)</title><rect x="228.5" y="517" width="5.5" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="231.54" y="527.5" ></text>
+</g>
+<g >
+<title>__pv_queued_spin_lock_slowpath (27,144,102 samples, 0.14%)</title><rect x="610.9" y="69" width="1.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="613.86" y="79.5" ></text>
+</g>
+<g >
+<title>__sysvec_hyperv_stimer0 (32,026,042 samples, 0.17%)</title><rect x="277.7" y="501" width="1.9" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="280.66" y="511.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_safe_stack (31,546,551 samples, 0.16%)</title><rect x="1049.0" y="613" width="1.9" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="1052.00" y="623.5" ></text>
+</g>
+<g >
+<title>std::ostream::sentry::sentry (31,258,832 samples, 0.16%)</title><rect x="222.6" y="581" width="1.9" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="225.59" y="591.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (64,025,798 samples, 0.33%)</title><rect x="1186.1" y="597" width="3.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1189.07" y="607.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (27,144,102 samples, 0.14%)</title><rect x="610.9" y="85" width="1.6" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="613.86" y="95.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (34,159,312 samples, 0.18%)</title><rect x="736.1" y="437" width="2.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="739.09" y="447.5" ></text>
+</g>
+<g >
+<title>void std::__sort&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (64,025,798 samples, 0.33%)</title><rect x="1186.1" y="613" width="3.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1189.07" y="623.5" ></text>
+</g>
+<g >
+<title>do_iter_readv_writev (139,127,457 samples, 0.72%)</title><rect x="1032.0" y="501" width="8.6" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="1035.02" y="511.5" ></text>
+</g>
+<g >
+<title>mmap_region (13,724,337 samples, 0.07%)</title><rect x="821.5" y="325" width="0.9" height="15.0" fill="rgb(231,121,28)" rx="2" ry="2" />
+<text  x="824.53" y="335.5" ></text>
+</g>
+<g >
+<title>tlb_batch_pages_flush (40,188,278 samples, 0.21%)</title><rect x="531.0" y="373" width="2.4" height="15.0" fill="rgb(234,133,32)" rx="2" ry="2" />
+<text  x="533.98" y="383.5" ></text>
+</g>
+<g >
+<title>__libc_write (28,002,631 samples, 0.15%)</title><rect x="452.5" y="597" width="1.8" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="455.54" y="607.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (36,231,706 samples, 0.19%)</title><rect x="1161.0" y="501" width="2.2" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1163.96" y="511.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getRightChild (29,106,706 samples, 0.15%)</title><rect x="792.8" y="405" width="1.8" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="795.82" y="415.5" ></text>
+</g>
+<g >
+<title>_dl_sysdep_start (13,908,516 samples, 0.07%)</title><rect x="821.5" y="565" width="0.9" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="824.52" y="575.5" ></text>
+</g>
+<g >
+<title>do_output_char (24,480,417 samples, 0.13%)</title><rect x="598.4" y="229" width="1.5" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="601.39" y="239.5" ></text>
+</g>
+<g >
+<title>exc_page_fault (60,545,334 samples, 0.31%)</title><rect x="218.9" y="581" width="3.7" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="221.88" y="591.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (176,805,200 samples, 0.92%)</title><rect x="804.0" y="469" width="10.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="806.97" y="479.5" ></text>
+</g>
+<g >
+<title>Book::insert (36,946,140 samples, 0.19%)</title><rect x="1133.3" y="517" width="2.3" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1136.34" y="527.5" ></text>
+</g>
+<g >
+<title>new_do_write (1,148,204,895 samples, 5.97%)</title><rect x="565.8" y="453" width="70.4" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="568.79" y="463.5" >new_do_..</text>
+</g>
+<g >
+<title>__virt_addr_valid (29,665,897 samples, 0.15%)</title><rect x="684.7" y="229" width="1.9" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="687.73" y="239.5" ></text>
+</g>
+<g >
+<title>folio_add_lru_vma (40,833,026 samples, 0.21%)</title><rect x="533.4" y="453" width="2.5" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="536.44" y="463.5" ></text>
+</g>
+<g >
+<title>_IO_new_do_write (2,186,264,294 samples, 11.36%)</title><rect x="316.3" y="549" width="134.1" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="319.30" y="559.5" >_IO_new_do_write</text>
+</g>
+<g >
+<title>update_curr_se (72,115,643 samples, 0.37%)</title><rect x="994.3" y="501" width="4.4" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="997.32" y="511.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1,756,802,114 samples, 9.13%)</title><rect x="90.8" y="437" width="107.7" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="93.80" y="447.5" >do_syscall_64</text>
+</g>
+<g >
+<title>__wake_up (61,898,146 samples, 0.32%)</title><rect x="108.9" y="341" width="3.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="111.95" y="351.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (203,002,855 samples, 1.05%)</title><rect x="1167.1" y="549" width="12.4" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1170.05" y="559.5" ></text>
+</g>
+<g >
+<title>tty_write_room (61,576,474 samples, 0.32%)</title><rect x="621.6" y="245" width="3.8" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="624.60" y="255.5" ></text>
+</g>
+<g >
+<title>asm_exc_page_fault (60,545,334 samples, 0.31%)</title><rect x="218.9" y="597" width="3.7" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="221.88" y="607.5" ></text>
+</g>
+<g >
+<title>vfs_write (1,655,638,358 samples, 8.60%)</title><rect x="329.4" y="357" width="101.5" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="332.38" y="367.5" >vfs_write</text>
+</g>
+<g >
+<title>folio_add_lru (40,833,026 samples, 0.21%)</title><rect x="533.4" y="437" width="2.5" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="536.44" y="447.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getLimitPrice (31,031,442 samples, 0.16%)</title><rect x="650.7" y="485" width="1.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="653.70" y="495.5" ></text>
+</g>
+<g >
+<title>baseline::Order::execute (31,074,373 samples, 0.16%)</title><rect x="764.2" y="501" width="1.9" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="767.21" y="511.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (120,895,619 samples, 0.63%)</title><rect x="255.7" y="549" width="7.5" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="258.75" y="559.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock (72,309,834 samples, 0.38%)</title><rect x="885.8" y="533" width="4.4" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="888.79" y="543.5" ></text>
+</g>
+<g >
+<title>do_iter_write (139,127,457 samples, 0.72%)</title><rect x="1032.0" y="517" width="8.6" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="1035.02" y="527.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getRightChild (30,096,770 samples, 0.16%)</title><rect x="732.3" y="437" width="1.9" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="735.31" y="447.5" ></text>
+</g>
+<g >
+<title>file_tty_write.isra.0 (30,122,266 samples, 0.16%)</title><rect x="676.0" y="277" width="1.9" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="679.04" y="287.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (151,715,616 samples, 0.79%)</title><rect x="57.2" y="517" width="9.3" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="60.17" y="527.5" ></text>
+</g>
+<g >
+<title>tty_write (819,799,003 samples, 4.26%)</title><rect x="576.9" y="277" width="50.3" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="579.91" y="287.5" >tty_w..</text>
+</g>
+<g >
+<title>hv_send_ipi (86,862,337 samples, 0.45%)</title><rect x="612.5" y="53" width="5.4" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="615.53" y="63.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_write (2,186,264,294 samples, 11.36%)</title><rect x="316.3" y="517" width="134.1" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="319.30" y="527.5" >_IO_new_file_write</text>
+</g>
+<g >
+<title>baseline::Limit::append (30,143,209 samples, 0.16%)</title><rect x="728.6" y="533" width="1.8" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="731.56" y="543.5" ></text>
+</g>
+<g >
+<title>update_rq_clock (35,608,927 samples, 0.19%)</title><rect x="977.1" y="517" width="2.2" height="15.0" fill="rgb(231,119,28)" rx="2" ry="2" />
+<text  x="980.11" y="527.5" ></text>
+</g>
+<g >
+<title>ksys_write (879,699,303 samples, 4.57%)</title><rect x="573.2" y="309" width="54.0" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="576.23" y="319.5" >ksys_..</text>
+</g>
+<g >
+<title>queue_work_on (296,644,655 samples, 1.54%)</title><rect x="601.5" y="197" width="18.2" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="604.47" y="207.5" ></text>
+</g>
+<g >
+<title>Limit::getRightChild (35,405,574 samples, 0.18%)</title><rect x="296.6" y="517" width="2.1" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="299.57" y="527.5" ></text>
+</g>
+<g >
+<title>sysvec_hyperv_stimer0 (29,103,977 samples, 0.15%)</title><rect x="778.0" y="421" width="1.8" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="781.01" y="431.5" ></text>
+</g>
+<g >
+<title>__list_del_entry_valid_or_report (24,930,764 samples, 0.13%)</title><rect x="548.2" y="373" width="1.5" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="551.19" y="383.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (30,160,181 samples, 0.16%)</title><rect x="283.5" y="549" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="286.54" y="559.5" ></text>
+</g>
+<g >
+<title>update_curr (280,903,960 samples, 1.46%)</title><rect x="985.7" y="517" width="17.2" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="988.72" y="527.5" ></text>
+</g>
+<g >
+<title>__mmap64 (13,724,337 samples, 0.07%)</title><rect x="821.5" y="453" width="0.9" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="824.53" y="463.5" ></text>
+</g>
+<g >
+<title>__mempcpy@plt (28,154,287 samples, 0.15%)</title><rect x="560.3" y="437" width="1.8" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="563.34" y="447.5" ></text>
+</g>
+<g >
+<title>__queue_work.part.0 (267,122,590 samples, 1.39%)</title><rect x="601.5" y="165" width="16.4" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="604.47" y="175.5" ></text>
+</g>
+<g >
+<title>do_anonymous_page (40,833,026 samples, 0.21%)</title><rect x="533.4" y="469" width="2.5" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="536.44" y="479.5" ></text>
+</g>
+<g >
+<title>up_read (36,506,974 samples, 0.19%)</title><rect x="426.6" y="309" width="2.2" height="15.0" fill="rgb(209,18,4)" rx="2" ry="2" />
+<text  x="429.56" y="319.5" ></text>
+</g>
+<g >
+<title>_IO_putc (29,907,177 samples, 0.16%)</title><rect x="211.8" y="565" width="1.8" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="214.78" y="575.5" ></text>
+</g>
+<g >
+<title>hv_isolation_type_snp (35,540,242 samples, 0.18%)</title><rect x="404.8" y="101" width="2.2" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="407.84" y="111.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (887,645,152 samples, 4.61%)</title><rect x="672.3" y="373" width="54.5" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="675.34" y="383.5" >entry..</text>
+</g>
+<g >
+<title>baseline::Book::balance (29,882,219 samples, 0.16%)</title><rect x="794.6" y="405" width="1.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="797.60" y="415.5" ></text>
+</g>
+<g >
+<title>pick_next_task_fair (179,163,125 samples, 0.93%)</title><rect x="966.1" y="517" width="11.0" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="969.12" y="527.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (58,988,925 samples, 0.31%)</title><rect x="792.8" y="453" width="3.6" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="795.82" y="463.5" ></text>
+</g>
+<g >
+<title>__tty_buffer_request_room (61,643,234 samples, 0.32%)</title><rect x="143.3" y="245" width="3.8" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="146.31" y="255.5" ></text>
+</g>
+<g >
+<title>tty_hung_up_p (73,840,582 samples, 0.38%)</title><rect x="415.9" y="309" width="4.5" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="418.91" y="319.5" ></text>
+</g>
+<g >
+<title>tty_insert_flip_string_and_push_buffer (661,877,184 samples, 3.44%)</title><rect x="149.0" y="293" width="40.6" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="152.00" y="303.5" >tty..</text>
+</g>
+<g >
+<title>hv_stimer0_isr (29,103,977 samples, 0.15%)</title><rect x="778.0" y="389" width="1.8" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="781.01" y="399.5" ></text>
+</g>
+<g >
+<title>__folio_alloc (55,714,747 samples, 0.29%)</title><rect x="546.3" y="421" width="3.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="549.30" y="431.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.35] (30,507,868 samples, 0.16%)</title><rect x="81.3" y="549" width="1.8" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="84.26" y="559.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (31,037,562 samples, 0.16%)</title><rect x="71.9" y="533" width="1.9" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="74.92" y="543.5" ></text>
+</g>
+<g >
+<title>sched_clock_cpu (104,278,046 samples, 0.54%)</title><rect x="1017.5" y="501" width="6.4" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1020.48" y="511.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (28,154,287 samples, 0.15%)</title><rect x="560.3" y="469" width="1.8" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="563.34" y="479.5" ></text>
+</g>
+<g >
+<title>__raw_callee_save___pv_queued_spin_unlock (34,970,162 samples, 0.18%)</title><rect x="374.6" y="229" width="2.2" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="377.61" y="239.5" ></text>
+</g>
+<g >
+<title>llist_del_first (30,726,095 samples, 0.16%)</title><rect x="150.9" y="245" width="1.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="153.93" y="255.5" ></text>
+</g>
+<g >
+<title>srso_alias_safe_ret (29,144,222 samples, 0.15%)</title><rect x="583.9" y="229" width="1.7" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="586.86" y="239.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::stdio_sync_filebuf&lt;char, std::char_traits&lt;char&gt; &gt;::sync (31,857,852 samples, 0.17%)</title><rect x="668.5" y="485" width="2.0" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="671.53" y="495.5" ></text>
+</g>
+<g >
+<title>__internal_syscall_cancel (947,101,674 samples, 4.92%)</title><rect x="670.5" y="389" width="58.1" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="673.48" y="399.5" >__inte..</text>
+</g>
+<g >
+<title>get_page_from_freelist (24,930,764 samples, 0.13%)</title><rect x="548.2" y="389" width="1.5" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="551.19" y="399.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1,828,822,802 samples, 9.50%)</title><rect x="320.8" y="421" width="112.1" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="323.80" y="431.5" >do_syscall_64</text>
+</g>
+<g >
+<title>Book::limitHeightDifference (31,259,297 samples, 0.16%)</title><rect x="268.3" y="517" width="1.9" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="271.30" y="527.5" ></text>
+</g>
+<g >
+<title>syscall_exit_to_user_mode (32,817,618 samples, 0.17%)</title><rect x="1042.6" y="597" width="2.0" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1045.56" y="607.5" ></text>
+</g>
+<g >
+<title>Book::insert (27,457,280 samples, 0.14%)</title><rect x="68.4" y="549" width="1.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="71.37" y="559.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (29,106,706 samples, 0.15%)</title><rect x="792.8" y="421" width="1.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="795.82" y="431.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (29,882,219 samples, 0.16%)</title><rect x="794.6" y="437" width="1.8" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="797.60" y="447.5" ></text>
+</g>
+<g >
+<title>__raw_callee_save___pv_queued_spin_unlock (34,448,321 samples, 0.18%)</title><rect x="402.7" y="197" width="2.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="405.73" y="207.5" ></text>
+</g>
+<g >
+<title>call_init_paths (13,724,337 samples, 0.07%)</title><rect x="821.5" y="533" width="0.9" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="824.53" y="543.5" ></text>
+</g>
+<g >
+<title>_IO_new_do_write (1,148,204,895 samples, 5.97%)</title><rect x="565.8" y="469" width="70.4" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="568.79" y="479.5" >_IO_new..</text>
+</g>
+<g >
+<title>pty_write (182,393,796 samples, 0.95%)</title><rect x="137.8" y="293" width="11.2" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="140.82" y="303.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_prepare (30,328,794 samples, 0.16%)</title><rect x="569.6" y="325" width="1.9" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="572.63" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::deleteLimit (334,939,578 samples, 1.74%)</title><rect x="743.7" y="501" width="20.5" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="746.67" y="511.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (58,988,925 samples, 0.31%)</title><rect x="792.8" y="469" width="3.6" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="795.82" y="479.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_write (1,148,204,895 samples, 5.97%)</title><rect x="565.8" y="437" width="70.4" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="568.79" y="447.5" >_IO_new..</text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (62,617,028 samples, 0.33%)</title><rect x="565.8" y="373" width="3.8" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="568.79" y="383.5" ></text>
+</g>
+<g >
+<title>std::ostream::sentry::sentry (25,351,798 samples, 0.13%)</title><rect x="213.6" y="565" width="1.6" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="216.61" y="575.5" ></text>
+</g>
+<g >
+<title>Order::execute (30,852,606 samples, 0.16%)</title><rect x="66.5" y="565" width="1.9" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="69.48" y="575.5" ></text>
+</g>
+<g >
+<title>Book::deleteLimit (181,116,660 samples, 0.94%)</title><rect x="287.6" y="581" width="11.1" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="290.64" y="591.5" ></text>
+</g>
+<g >
+<title>do_writev (139,127,457 samples, 0.72%)</title><rect x="1032.0" y="549" width="8.6" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="1035.02" y="559.5" ></text>
+</g>
+<g >
+<title>Book::insert (73,134,667 samples, 0.38%)</title><rect x="1158.7" y="581" width="4.5" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1161.70" y="591.5" ></text>
+</g>
+<g >
+<title>__x64_sys_write (1,792,459,401 samples, 9.32%)</title><rect x="323.0" y="389" width="109.9" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="326.03" y="399.5" >__x64_sys_write</text>
+</g>
+<g >
+<title>pfn_pte (30,449,669 samples, 0.16%)</title><rect x="220.7" y="501" width="1.9" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="223.73" y="511.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (207,509,056 samples, 1.08%)</title><rect x="745.6" y="469" width="12.7" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="748.57" y="479.5" ></text>
+</g>
+<g >
+<title>tty_insert_flip_string_and_push_buffer (416,110,983 samples, 2.16%)</title><rect x="690.4" y="213" width="25.5" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="693.43" y="223.5" >t..</text>
+</g>
+<g >
+<title>Book::balance (92,955,245 samples, 0.48%)</title><rect x="234.0" y="533" width="5.7" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="237.02" y="543.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (1,792,459,401 samples, 9.32%)</title><rect x="323.0" y="405" width="109.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="326.03" y="415.5" >x64_sys_call</text>
+</g>
+<g >
+<title>baseline::Book::balance (118,336,069 samples, 0.61%)</title><rect x="641.7" y="485" width="7.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="644.68" y="495.5" ></text>
+</g>
+<g >
+<title>__pv_queued_spin_lock_slowpath (354,838,197 samples, 1.84%)</title><rect x="154.7" y="213" width="21.7" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="157.65" y="223.5" >_..</text>
+</g>
+<g >
+<title>Book::addLimit (27,457,280 samples, 0.14%)</title><rect x="68.4" y="581" width="1.7" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="71.37" y="591.5" ></text>
+</g>
+<g >
+<title>std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::_M_insert_int&lt;long&gt; (25,260,924 samples, 0.13%)</title><rect x="667.0" y="485" width="1.5" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="669.98" y="495.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (30,160,181 samples, 0.16%)</title><rect x="283.5" y="485" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="286.54" y="495.5" ></text>
+</g>
+<g >
+<title>lru_add_fn (40,833,026 samples, 0.21%)</title><rect x="533.4" y="405" width="2.5" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="536.44" y="415.5" ></text>
+</g>
+<g >
+<title>hv_send_ipi (61,888,675 samples, 0.32%)</title><rect x="185.8" y="133" width="3.8" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="188.80" y="143.5" ></text>
+</g>
+<g >
+<title>_int_free_chunk (40,188,278 samples, 0.21%)</title><rect x="531.0" y="549" width="2.4" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="533.98" y="559.5" ></text>
+</g>
+<g >
+<title>_dl_start_final (13,908,516 samples, 0.07%)</title><rect x="821.5" y="581" width="0.9" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="824.52" y="591.5" ></text>
+</g>
+<g >
+<title>kick_pool (71,143,703 samples, 0.37%)</title><rect x="404.8" y="213" width="4.4" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="407.84" y="223.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (31,037,562 samples, 0.16%)</title><rect x="71.9" y="549" width="1.9" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="74.92" y="559.5" ></text>
+</g>
+<g >
+<title>Book::insert (215,134,702 samples, 1.12%)</title><rect x="1122.4" y="581" width="13.2" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1125.41" y="591.5" ></text>
+</g>
+<g >
+<title>__queue_work.part.0 (389,503,435 samples, 2.02%)</title><rect x="692.1" y="165" width="23.8" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="695.06" y="175.5" >_..</text>
+</g>
+<g >
+<title>baseline::Book::balance (34,159,312 samples, 0.18%)</title><rect x="736.1" y="469" width="2.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="739.09" y="479.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (62,626,807 samples, 0.33%)</title><rect x="738.2" y="437" width="3.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="741.19" y="447.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (61,888,675 samples, 0.32%)</title><rect x="185.8" y="117" width="3.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="188.80" y="127.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (25,825,175 samples, 0.13%)</title><rect x="599.9" y="197" width="1.6" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="602.89" y="207.5" ></text>
+</g>
+<g >
+<title>queue_work_on (35,956,477 samples, 0.19%)</title><rect x="376.8" y="245" width="2.2" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="379.76" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::marketOrder (264,994,220 samples, 1.38%)</title><rect x="639.9" y="533" width="16.3" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="642.92" y="543.5" ></text>
+</g>
+<g >
+<title>Limit::append (30,079,058 samples, 0.16%)</title><rect x="215.2" y="597" width="1.8" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="218.17" y="607.5" ></text>
+</g>
+<g >
+<title>hv_send_ipi (35,540,242 samples, 0.18%)</title><rect x="404.8" y="117" width="2.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="407.84" y="127.5" ></text>
+</g>
+<g >
+<title>__list_add_valid_or_report (29,959,969 samples, 0.16%)</title><rect x="596.6" y="213" width="1.8" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="599.55" y="223.5" ></text>
+</g>
+<g >
+<title>tty_write (657,741,462 samples, 3.42%)</title><rect x="681.4" y="277" width="40.3" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="684.35" y="287.5" >tty..</text>
+</g>
+<g >
+<title>__tty_insert_flip_string_flags (91,548,348 samples, 0.48%)</title><rect x="141.5" y="261" width="5.6" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="144.48" y="271.5" ></text>
+</g>
+<g >
+<title>n_tty_write (479,300,865 samples, 2.49%)</title><rect x="686.6" y="245" width="29.3" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="689.55" y="255.5" >n_..</text>
+</g>
+<g >
+<title>syscall_exit_to_user_mode (35,047,834 samples, 0.18%)</title><rect x="432.9" y="421" width="2.2" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="435.94" y="431.5" ></text>
+</g>
+<g >
+<title>Limit::setRightChild (30,629,292 samples, 0.16%)</title><rect x="270.2" y="549" width="1.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="273.22" y="559.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (35,360,326 samples, 0.18%)</title><rect x="307.5" y="549" width="2.2" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="310.52" y="559.5" ></text>
+</g>
+<g >
+<title>all (19,242,468,180 samples, 100%)</title><rect x="10.0" y="645" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="655.5" ></text>
+</g>
+<g >
+<title>syscall_exit_to_user_mode (30,328,794 samples, 0.16%)</title><rect x="569.6" y="341" width="1.9" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="572.63" y="351.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (34,138,089 samples, 0.18%)</title><rect x="1126.9" y="517" width="2.0" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1129.85" y="527.5" ></text>
+</g>
+<g >
+<title>perf_adjust_freq_unthr_context (29,103,977 samples, 0.15%)</title><rect x="778.0" y="261" width="1.8" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="781.01" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::marketOrderHelper (208,077,313 samples, 1.08%)</title><rect x="802.0" y="517" width="12.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="805.05" y="527.5" ></text>
+</g>
+<g >
+<title>__queue_work (296,644,655 samples, 1.54%)</title><rect x="601.5" y="181" width="18.2" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="604.47" y="191.5" ></text>
+</g>
+<g >
+<title>srso_alias_safe_ret (69,964,686 samples, 0.36%)</title><rect x="1113.8" y="613" width="4.3" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1116.84" y="623.5" ></text>
+</g>
+<g >
+<title>n_tty_write (1,136,833,242 samples, 5.91%)</title><rect x="346.2" y="309" width="69.7" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="349.20" y="319.5" >n_tty_w..</text>
+</g>
+<g >
+<title>Book::insert (88,339,065 samples, 0.46%)</title><rect x="239.7" y="533" width="5.4" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="242.72" y="543.5" ></text>
+</g>
+<g >
+<title>operator delete (28,907,276 samples, 0.15%)</title><rect x="762.4" y="469" width="1.8" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="765.44" y="479.5" ></text>
+</g>
+<g >
+<title>add_wait_queue (23,469,481 samples, 0.12%)</title><rect x="127.2" y="325" width="1.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="130.16" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::modifyLimitOrder (1,180,517,770 samples, 6.13%)</title><rect x="656.2" y="533" width="72.4" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="659.17" y="543.5" >baseline..</text>
+</g>
+<g >
+<title>std::ostream&amp; std::ostream::_M_insert&lt;long&gt; (62,140,227 samples, 0.32%)</title><rect x="79.3" y="581" width="3.8" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="82.32" y="591.5" ></text>
+</g>
+<g >
+<title>syscall_enter_from_user_mode (32,748,006 samples, 0.17%)</title><rect x="1040.6" y="597" width="2.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1043.55" y="607.5" ></text>
+</g>
+<g >
+<title>_IO_new_do_write (947,101,674 samples, 4.92%)</title><rect x="670.5" y="469" width="58.1" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="673.48" y="479.5" >_IO_ne..</text>
+</g>
+<g >
+<title>Book::limitHeightDifference (28,715,645 samples, 0.15%)</title><rect x="243.4" y="453" width="1.7" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="246.37" y="463.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (28,255,851 samples, 0.15%)</title><rect x="645.4" y="453" width="1.7" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="648.37" y="463.5" ></text>
+</g>
+<g >
+<title>wake_up_process (206,096,219 samples, 1.07%)</title><rect x="703.3" y="133" width="12.6" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="706.30" y="143.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (60,538,993 samples, 0.31%)</title><rect x="273.9" y="533" width="3.8" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="276.95" y="543.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (347,750,454 samples, 1.81%)</title><rect x="822.4" y="613" width="21.3" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="825.37" y="623.5" >e..</text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (3,348,033,991 samples, 17.40%)</title><rect x="843.7" y="613" width="205.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="846.69" y="623.5" >entry_SYSCALL_64_after_hwf..</text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (64,025,798 samples, 0.33%)</title><rect x="1186.1" y="565" width="3.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1189.07" y="575.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (34,138,089 samples, 0.18%)</title><rect x="1126.9" y="533" width="2.0" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1129.85" y="543.5" ></text>
+</g>
+<g >
+<title>__queue_work (424,165,833 samples, 2.20%)</title><rect x="387.7" y="245" width="26.0" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="390.66" y="255.5" >_..</text>
+</g>
+<g >
+<title>__wake_up_common_lock (29,156,210 samples, 0.15%)</title><rect x="582.1" y="229" width="1.8" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="585.07" y="239.5" ></text>
+</g>
+<g >
+<title>__smp_call_single_queue (35,540,242 samples, 0.18%)</title><rect x="404.8" y="149" width="2.2" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="407.84" y="159.5" ></text>
+</g>
+<g >
+<title>folio_add_lru (30,095,665 samples, 0.16%)</title><rect x="218.9" y="501" width="1.8" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="221.88" y="511.5" ></text>
+</g>
+<g >
+<title>copyin (31,084,751 samples, 0.16%)</title><rect x="125.3" y="309" width="1.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="128.25" y="319.5" ></text>
+</g>
+<g >
+<title>entry_SYSRETQ_unsafe_stack (29,144,795 samples, 0.15%)</title><rect x="726.8" y="373" width="1.8" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="729.77" y="383.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (13,724,337 samples, 0.07%)</title><rect x="821.5" y="421" width="0.9" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="824.53" y="431.5" ></text>
+</g>
+<g >
+<title>free_pages_and_swap_cache (40,188,278 samples, 0.21%)</title><rect x="531.0" y="357" width="2.4" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="533.98" y="367.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (33,337,355 samples, 0.17%)</title><rect x="88.8" y="453" width="2.0" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="91.76" y="463.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (62,626,807 samples, 0.33%)</title><rect x="738.2" y="453" width="3.8" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="741.19" y="463.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (60,827,292 samples, 0.32%)</title><rect x="264.6" y="517" width="3.7" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="267.57" y="527.5" ></text>
+</g>
+<g >
+<title>__internal_syscall_cancel (2,006,132,494 samples, 10.43%)</title><rect x="88.8" y="469" width="123.0" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="91.76" y="479.5" >__internal_sysc..</text>
+</g>
+<g >
+<title>free_unref_page_commit (40,188,278 samples, 0.21%)</title><rect x="531.0" y="309" width="2.4" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="533.98" y="319.5" ></text>
+</g>
+<g >
+<title>std::ostream&amp; std::ostream::_M_insert&lt;long&gt; (25,260,924 samples, 0.13%)</title><rect x="667.0" y="501" width="1.5" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="669.98" y="511.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_stimer0 (29,103,977 samples, 0.15%)</title><rect x="778.0" y="437" width="1.8" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="781.01" y="447.5" ></text>
+</g>
+<g >
+<title>_IO_fwrite (35,360,326 samples, 0.18%)</title><rect x="307.5" y="581" width="2.2" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="310.52" y="591.5" ></text>
+</g>
+<g >
+<title>baseline::Book::searchOrderMap (1,089,191,012 samples, 5.66%)</title><rect x="661.8" y="517" width="66.8" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="664.77" y="527.5" >baselin..</text>
+</g>
+<g >
+<title>ksys_write (1,666,727,882 samples, 8.66%)</title><rect x="96.3" y="389" width="102.2" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="99.33" y="399.5" >ksys_write</text>
+</g>
+<g >
+<title>Book::marketOrder (182,568,222 samples, 0.95%)</title><rect x="57.2" y="597" width="11.2" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="60.17" y="607.5" ></text>
+</g>
+<g >
+<title>sysvec_hyperv_stimer0 (25,867,721 samples, 0.13%)</title><rect x="745.6" y="421" width="1.6" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="748.57" y="431.5" ></text>
+</g>
+<g >
+<title>__smp_call_single_queue (86,862,337 samples, 0.45%)</title><rect x="612.5" y="85" width="5.4" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="615.53" y="95.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getLeftChild (30,299,303 samples, 0.16%)</title><rect x="791.0" y="437" width="1.8" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="793.96" y="447.5" ></text>
+</g>
+<g >
+<title>cpuacct_charge (36,062,040 samples, 0.19%)</title><rect x="992.1" y="501" width="2.2" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="995.10" y="511.5" ></text>
+</g>
+<g >
+<title>Limit::getRightChild (36,754,111 samples, 0.19%)</title><rect x="1124.6" y="517" width="2.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1127.60" y="527.5" ></text>
+</g>
+<g >
+<title>Book::insert (27,457,280 samples, 0.14%)</title><rect x="68.4" y="533" width="1.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="71.37" y="543.5" ></text>
+</g>
+<g >
+<title>hv_ce_set_next_event (25,867,721 samples, 0.13%)</title><rect x="745.6" y="325" width="1.6" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="748.57" y="335.5" ></text>
+</g>
+<g >
+<title>n_tty_write (29,363,116 samples, 0.15%)</title><rect x="625.4" y="261" width="1.8" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="628.38" y="271.5" ></text>
+</g>
+<g >
+<title>Book::balance (28,715,645 samples, 0.15%)</title><rect x="243.4" y="469" width="1.7" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="246.37" y="479.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (104,512,746 samples, 0.54%)</title><rect x="370.3" y="245" width="6.5" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="373.35" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::findLimit (29,445,187 samples, 0.15%)</title><rect x="660.0" y="517" width="1.8" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="662.96" y="527.5" ></text>
+</g>
+<g >
+<title>_raw_spin_trylock (30,783,983 samples, 0.16%)</title><rect x="546.3" y="389" width="1.9" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="549.30" y="399.5" ></text>
+</g>
+<g >
+<title>baseline::Book::deleteLimit (236,293,994 samples, 1.23%)</title><rect x="641.7" y="501" width="14.5" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="644.68" y="511.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (30,285,897 samples, 0.16%)</title><rect x="241.5" y="485" width="1.9" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="244.52" y="495.5" ></text>
+</g>
+<g >
+<title>__libc_write (2,036,005,519 samples, 10.58%)</title><rect x="86.9" y="501" width="124.9" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="89.93" y="511.5" >__libc_write</text>
+</g>
+<g >
+<title>sysvec_hyperv_stimer0 (32,026,042 samples, 0.17%)</title><rect x="277.7" y="517" width="1.9" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="280.66" y="527.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (29,103,977 samples, 0.15%)</title><rect x="778.0" y="325" width="1.8" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="781.01" y="335.5" ></text>
+</g>
+<g >
+<title>kick_pool (114,006,439 samples, 0.59%)</title><rect x="610.9" y="149" width="7.0" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="613.86" y="159.5" ></text>
+</g>
+<g >
+<title>Limit::~Limit (36,801,737 samples, 0.19%)</title><rect x="1181.6" y="565" width="2.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1184.56" y="575.5" ></text>
+</g>
+<g >
+<title>update_min_vruntime (33,795,261 samples, 0.18%)</title><rect x="1007.0" y="517" width="2.1" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="1010.04" y="527.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel (1,148,204,895 samples, 5.97%)</title><rect x="565.8" y="405" width="70.4" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="568.79" y="415.5" >__sysca..</text>
+</g>
+<g >
+<title>Book::balance (31,259,297 samples, 0.16%)</title><rect x="268.3" y="533" width="1.9" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="271.30" y="543.5" ></text>
+</g>
+<g >
+<title>do_output_char (25,405,030 samples, 0.13%)</title><rect x="344.6" y="309" width="1.6" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="347.64" y="319.5" ></text>
+</g>
+<g >
+<title>Book::updateBookEdgeRemove (32,026,042 samples, 0.17%)</title><rect x="277.7" y="549" width="1.9" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="280.66" y="559.5" ></text>
+</g>
+<g >
+<title>exc_page_fault (85,432,895 samples, 0.44%)</title><rect x="544.5" y="517" width="5.2" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="547.48" y="527.5" ></text>
+</g>
+<g >
+<title>__x64_sys_write (879,699,303 samples, 4.57%)</title><rect x="573.2" y="325" width="54.0" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="576.23" y="335.5" >__x64..</text>
+</g>
+<g >
+<title>copy_page_from_iter_atomic (35,373,251 samples, 0.18%)</title><rect x="1032.0" y="453" width="2.2" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="1035.02" y="463.5" ></text>
+</g>
+<g >
+<title>_dl_init_paths (13,724,337 samples, 0.07%)</title><rect x="821.5" y="517" width="0.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="824.53" y="527.5" ></text>
+</g>
+<g >
+<title>__tty_buffer_request_room (30,726,095 samples, 0.16%)</title><rect x="150.9" y="261" width="1.9" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="153.93" y="271.5" ></text>
+</g>
+<g >
+<title>Book::marketOrderHelper (153,866,058 samples, 0.80%)</title><rect x="272.1" y="581" width="9.4" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="275.09" y="591.5" ></text>
+</g>
+<g >
+<title>new_do_write (947,101,674 samples, 4.92%)</title><rect x="670.5" y="453" width="58.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="673.48" y="463.5" >new_do..</text>
+</g>
+<g >
+<title>_IO_fwrite (61,461,700 samples, 0.32%)</title><rect x="70.1" y="565" width="3.7" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="73.05" y="575.5" ></text>
+</g>
+<g >
+<title>Limit::getLeftChild (31,259,297 samples, 0.16%)</title><rect x="268.3" y="485" width="1.9" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="271.30" y="495.5" ></text>
+</g>
+<g >
+<title>ext4_buffered_write_iter (139,127,457 samples, 0.72%)</title><rect x="1032.0" y="469" width="8.6" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="1035.02" y="479.5" ></text>
+</g>
+<g >
+<title>Limit::getLeftChild (29,638,276 samples, 0.15%)</title><rect x="1177.7" y="517" width="1.8" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="1180.68" y="527.5" ></text>
+</g>
+<g >
+<title>native_sched_clock (32,740,472 samples, 0.17%)</title><rect x="1021.9" y="469" width="2.0" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="1024.87" y="479.5" ></text>
+</g>
+<g >
+<title>vfs_write (1,639,616,814 samples, 8.52%)</title><rect x="98.0" y="373" width="100.5" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="100.99" y="383.5" >vfs_write</text>
+</g>
+<g >
+<title>Book::balance (36,583,907 samples, 0.19%)</title><rect x="1131.1" y="517" width="2.2" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1134.09" y="527.5" ></text>
+</g>
+<g >
+<title>__libc_start_main_impl (5,957,799,179 samples, 30.96%)</title><rect x="456.2" y="597" width="365.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="459.17" y="607.5" >__libc_start_main_impl</text>
+</g>
+<g >
+<title>Limit::getRightChild (34,713,867 samples, 0.18%)</title><rect x="1146.2" y="517" width="2.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1149.24" y="527.5" ></text>
+</g>
+<g >
+<title>tty_update_time (66,066,739 samples, 0.34%)</title><rect x="420.4" y="309" width="4.1" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="423.44" y="319.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel_arch (2,112,871,011 samples, 10.98%)</title><rect x="320.8" y="453" width="129.6" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="323.80" y="463.5" >__syscall_cancel..</text>
+</g>
+<g >
+<title>__munmap (40,188,278 samples, 0.21%)</title><rect x="531.0" y="533" width="2.4" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="533.98" y="543.5" ></text>
+</g>
+<g >
+<title>__minimal_malloc (13,724,337 samples, 0.07%)</title><rect x="821.5" y="485" width="0.9" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="824.53" y="495.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (62,626,807 samples, 0.33%)</title><rect x="738.2" y="421" width="3.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="741.19" y="431.5" ></text>
+</g>
+<g >
+<title>n_tty_write (491,055,531 samples, 2.55%)</title><rect x="591.5" y="245" width="30.1" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="594.49" y="255.5" >n_..</text>
+</g>
+<g >
+<title>__mmap64 (13,724,337 samples, 0.07%)</title><rect x="821.5" y="469" width="0.9" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="824.53" y="479.5" ></text>
+</g>
+<g >
+<title>__alloc_pages (35,361,424 samples, 0.18%)</title><rect x="1038.4" y="357" width="2.2" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1041.38" y="367.5" ></text>
+</g>
+<g >
+<title>Book::balance (34,138,089 samples, 0.18%)</title><rect x="1126.9" y="549" width="2.0" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1129.85" y="559.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_prepare (102,772,531 samples, 0.53%)</title><rect x="862.1" y="581" width="6.3" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="865.14" y="591.5" ></text>
+</g>
+<g >
+<title>void Book::matchOrder&lt;true&gt; (420,432,441 samples, 2.18%)</title><rect x="255.7" y="597" width="25.8" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="258.75" y="607.5" >v..</text>
+</g>
+<g >
+<title>ext4_da_get_block_prep (68,392,782 samples, 0.36%)</title><rect x="1034.2" y="389" width="4.2" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="1037.19" y="399.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (61,448,545 samples, 0.32%)</title><rect x="235.9" y="501" width="3.8" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="238.95" y="511.5" ></text>
+</g>
+<g >
+<title>__block_write_begin (68,392,782 samples, 0.36%)</title><rect x="1034.2" y="421" width="4.2" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1037.19" y="431.5" ></text>
+</g>
+<g >
+<title>Book::cancelLimitOrder (62,137,166 samples, 0.32%)</title><rect x="53.4" y="597" width="3.8" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="56.36" y="607.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;int, std::pair&lt;int const, baseline::Limit*&gt;, std::allocator&lt;std::pair&lt;int const, baseline::Limit*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;int&gt;, std::hash&lt;int&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::erase (58,057,416 samples, 0.30%)</title><rect x="652.6" y="485" width="3.6" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="655.61" y="495.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getRightChild (31,001,977 samples, 0.16%)</title><rect x="779.8" y="453" width="1.9" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="782.79" y="463.5" ></text>
+</g>
+<g >
+<title>[[kernel.kallsyms]] (59,347,979 samples, 0.31%)</title><rect x="612.5" y="37" width="3.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="615.53" y="47.5" ></text>
+</g>
+<g >
+<title>update_process_times (29,103,977 samples, 0.15%)</title><rect x="778.0" y="309" width="1.8" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="781.01" y="319.5" ></text>
+</g>
+<g >
+<title>ttwu_queue_wakelist (62,982,650 samples, 0.33%)</title><rect x="712.1" y="101" width="3.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="715.08" y="111.5" ></text>
+</g>
+<g >
+<title>_copy_from_iter (25,468,659 samples, 0.13%)</title><rect x="576.9" y="261" width="1.6" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="579.91" y="271.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (30,320,499 samples, 0.16%)</title><rect x="123.4" y="309" width="1.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="126.39" y="319.5" ></text>
+</g>
+<g >
+<title>pty_write_room (36,462,687 samples, 0.19%)</title><rect x="413.7" y="293" width="2.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="416.67" y="303.5" ></text>
+</g>
+<g >
+<title>Book::balance (29,337,523 samples, 0.15%)</title><rect x="239.7" y="517" width="1.8" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="242.72" y="527.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::stdio_sync_filebuf&lt;char, std::char_traits&lt;char&gt; &gt;::xsputn (29,601,779 samples, 0.15%)</title><rect x="73.8" y="565" width="1.8" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="76.82" y="575.5" ></text>
+</g>
+<g >
+<title>generic_perform_write (103,754,206 samples, 0.54%)</title><rect x="1034.2" y="453" width="6.4" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1037.19" y="463.5" ></text>
+</g>
+<g >
+<title>remove_wait_queue (31,562,383 samples, 0.16%)</title><rect x="619.7" y="229" width="1.9" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="622.67" y="239.5" ></text>
+</g>
+<g >
+<title>ldsem_up_read (24,652,985 samples, 0.13%)</title><rect x="128.6" y="325" width="1.5" height="15.0" fill="rgb(252,217,51)" rx="2" ry="2" />
+<text  x="131.60" y="335.5" ></text>
+</g>
+<g >
+<title>__sysvec_hyperv_stimer0 (29,103,977 samples, 0.15%)</title><rect x="778.0" y="405" width="1.8" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="781.01" y="415.5" ></text>
+</g>
+<g >
+<title>Book::balance (35,336,799 samples, 0.18%)</title><rect x="1120.2" y="581" width="2.2" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1123.24" y="591.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel (2,036,005,519 samples, 10.58%)</title><rect x="86.9" y="485" width="124.9" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="89.93" y="495.5" >__syscall_cancel</text>
+</g>
+<g >
+<title>_IO_new_file_overflow (1,148,204,895 samples, 5.97%)</title><rect x="565.8" y="485" width="70.4" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="568.79" y="495.5" >_IO_new..</text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (30,160,181 samples, 0.16%)</title><rect x="283.5" y="517" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="286.54" y="527.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (55,714,747 samples, 0.29%)</title><rect x="546.3" y="469" width="3.4" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="549.30" y="479.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (207,509,056 samples, 1.08%)</title><rect x="745.6" y="485" width="12.7" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="748.57" y="495.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (153,116,151 samples, 0.80%)</title><rect x="601.5" y="149" width="9.4" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="604.47" y="159.5" ></text>
+</g>
+<g >
+<title>rw_verify_area (58,406,362 samples, 0.30%)</title><rect x="103.6" y="357" width="3.6" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="106.61" y="367.5" ></text>
+</g>
+<g >
+<title>Book::insert (142,642,550 samples, 0.74%)</title><rect x="1126.9" y="565" width="8.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1129.85" y="575.5" ></text>
+</g>
+<g >
+<title>__list_del_entry_valid_or_report (68,529,286 samples, 0.36%)</title><rect x="909.8" y="501" width="4.2" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="912.79" y="511.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (110,266,618 samples, 0.57%)</title><rect x="784.2" y="485" width="6.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="787.20" y="495.5" ></text>
+</g>
+<g >
+<title>malloc (13,724,337 samples, 0.07%)</title><rect x="821.5" y="501" width="0.9" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="824.53" y="511.5" ></text>
+</g>
+<g >
+<title>__smp_call_single_queue (61,888,675 samples, 0.32%)</title><rect x="185.8" y="165" width="3.8" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="188.80" y="175.5" ></text>
+</g>
+<g >
+<title>Limit::setLeftChild (31,048,631 samples, 0.16%)</title><rect x="279.6" y="549" width="1.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="282.62" y="559.5" ></text>
+</g>
+<g >
+<title>update_curr_se (66,759,911 samples, 0.35%)</title><rect x="1002.9" y="517" width="4.1" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="1005.95" y="527.5" ></text>
+</g>
+<g >
+<title>exc_page_fault (40,833,026 samples, 0.21%)</title><rect x="533.4" y="533" width="2.5" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="536.44" y="543.5" ></text>
+</g>
+<g >
+<title>do_vmi_align_munmap (40,188,278 samples, 0.21%)</title><rect x="531.0" y="421" width="2.4" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="533.98" y="431.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (144,519,550 samples, 0.75%)</title><rect x="289.9" y="549" width="8.8" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="292.88" y="559.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (40,833,026 samples, 0.21%)</title><rect x="533.4" y="501" width="2.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="536.44" y="511.5" ></text>
+</g>
+<g >
+<title>asm_exc_page_fault (85,432,895 samples, 0.44%)</title><rect x="544.5" y="533" width="5.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="547.48" y="543.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (35,336,799 samples, 0.18%)</title><rect x="1120.2" y="549" width="2.2" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1123.24" y="559.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (118,336,069 samples, 0.61%)</title><rect x="641.7" y="469" width="7.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="644.68" y="479.5" ></text>
+</g>
+<g >
+<title>Book::addLimit (270,691,095 samples, 1.41%)</title><rect x="228.5" y="581" width="16.6" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="231.54" y="591.5" ></text>
+</g>
+<g >
+<title>srso_alias_safe_ret (35,705,063 samples, 0.19%)</title><rect x="963.9" y="501" width="2.2" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="966.93" y="511.5" ></text>
+</g>
+<g >
+<title>BenchStats (anonymous namespace)::run_workload&lt;(anonymous namespace)::SlabBookAdapter&gt; (3,936,055,392 samples, 20.46%)</title><rect x="44.0" y="613" width="241.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="47.02" y="623.5" >BenchStats (anonymous namespace)..</text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (25,599,951 samples, 0.13%)</title><rect x="819.9" y="485" width="1.6" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="822.95" y="495.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getLeftChild (28,304,480 samples, 0.15%)</title><rect x="789.2" y="437" width="1.8" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="792.22" y="447.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (938,439,528 samples, 4.88%)</title><rect x="569.6" y="357" width="57.6" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="572.63" y="367.5" >do_sys..</text>
+</g>
+<g >
+<title>__internal_syscall_cancel (1,148,204,895 samples, 5.97%)</title><rect x="565.8" y="389" width="70.4" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="568.79" y="399.5" >__inter..</text>
+</g>
+<g >
+<title>baseline::Book::balance (139,340,126 samples, 0.72%)</title><rect x="773.1" y="501" width="8.6" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="776.15" y="511.5" ></text>
+</g>
+<g >
+<title>__irqentry_text_end (30,465,685 samples, 0.16%)</title><rect x="217.0" y="581" width="1.9" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="220.01" y="591.5" ></text>
+</g>
+<g >
+<title>Book::insert (73,530,047 samples, 0.38%)</title><rect x="1131.1" y="533" width="4.5" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1134.09" y="543.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (30,160,181 samples, 0.16%)</title><rect x="283.5" y="501" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="286.54" y="511.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (31,508,150 samples, 0.16%)</title><rect x="658.0" y="453" width="2.0" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="661.03" y="463.5" ></text>
+</g>
+<g >
+<title>wake_up_process (214,908,824 samples, 1.12%)</title><rect x="176.4" y="213" width="13.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="179.41" y="223.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (61,664,779 samples, 0.32%)</title><rect x="732.3" y="501" width="3.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="735.31" y="511.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock_irqsave (30,049,648 samples, 0.16%)</title><rect x="152.8" y="277" width="1.9" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="155.81" y="287.5" ></text>
+</g>
+<g >
+<title>Book::deleteLimit (310,352,100 samples, 1.61%)</title><rect x="1164.8" y="581" width="19.0" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="1167.78" y="591.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (151,715,616 samples, 0.79%)</title><rect x="57.2" y="533" width="9.3" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="60.17" y="543.5" ></text>
+</g>
+<g >
+<title>Book::balance (120,895,619 samples, 0.63%)</title><rect x="255.7" y="565" width="7.5" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="258.75" y="575.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (30,299,303 samples, 0.16%)</title><rect x="791.0" y="453" width="1.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="793.96" y="463.5" ></text>
+</g>
+<g >
+<title>baseline::Book::searchOrderMap (1,385,387,522 samples, 7.20%)</title><rect x="551.2" y="517" width="85.0" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="554.25" y="527.5" >baseline:..</text>
+</g>
+<g >
+<title>x64_sys_call (1,695,491,421 samples, 8.81%)</title><rect x="94.6" y="421" width="103.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="97.56" y="431.5" >x64_sys_call</text>
+</g>
+<g >
+<title>Book::addLimit (250,471,501 samples, 1.30%)</title><rect x="1120.2" y="597" width="15.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1123.24" y="607.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (1,756,802,114 samples, 9.13%)</title><rect x="90.8" y="453" width="107.7" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="93.80" y="463.5" >entry_SYSCALL..</text>
+</g>
+<g >
+<title>scheduler_tick (29,103,977 samples, 0.15%)</title><rect x="778.0" y="293" width="1.8" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="781.01" y="303.5" ></text>
+</g>
+<g >
+<title>Book::balance (203,002,855 samples, 1.05%)</title><rect x="1167.1" y="565" width="12.4" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1170.05" y="575.5" ></text>
+</g>
+<g >
+<title>vm_mmap_pgoff (13,724,337 samples, 0.07%)</title><rect x="821.5" y="357" width="0.9" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="824.53" y="367.5" ></text>
+</g>
+<g >
+<title>ldsem_down_read (31,264,112 samples, 0.16%)</title><rect x="589.6" y="245" width="1.9" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="592.57" y="255.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_write (2,067,407,395 samples, 10.74%)</title><rect x="85.0" y="517" width="126.8" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="88.00" y="527.5" >_IO_new_file_wr..</text>
+</g>
+<g >
+<title>do_vmi_munmap (40,188,278 samples, 0.21%)</title><rect x="531.0" y="437" width="2.4" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="533.98" y="447.5" ></text>
+</g>
+<g >
+<title>Book::balance (34,974,414 samples, 0.18%)</title><rect x="1128.9" y="533" width="2.2" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1131.95" y="543.5" ></text>
+</g>
+<g >
+<title>_start (5,971,707,695 samples, 31.03%)</title><rect x="456.2" y="613" width="366.2" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="459.17" y="623.5" >_start</text>
+</g>
+<g >
+<title>new_do_write (2,067,407,395 samples, 10.74%)</title><rect x="85.0" y="533" width="126.8" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="88.00" y="543.5" >new_do_write</text>
+</g>
+<g >
+<title>Limit::getLeftChild (31,196,996 samples, 0.16%)</title><rect x="237.8" y="485" width="1.9" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="240.80" y="495.5" ></text>
+</g>
+<g >
+<title>vma_alloc_folio (55,714,747 samples, 0.29%)</title><rect x="546.3" y="437" width="3.4" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="549.30" y="447.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (35,360,326 samples, 0.18%)</title><rect x="307.5" y="565" width="2.2" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="310.52" y="575.5" ></text>
+</g>
+<g >
+<title>__send_ipi_one (27,514,358 samples, 0.14%)</title><rect x="616.2" y="37" width="1.7" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="619.17" y="47.5" ></text>
+</g>
+<g >
+<title>selinux_file_permission (23,349,513 samples, 0.12%)</title><rect x="679.9" y="245" width="1.5" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="682.92" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (56,298,470 samples, 0.29%)</title><rect x="787.5" y="453" width="3.5" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="790.51" y="463.5" ></text>
+</g>
+<g >
+<title>std::ostream::put (2,221,233,651 samples, 11.54%)</title><rect x="314.2" y="597" width="136.2" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="317.15" y="607.5" >std::ostream::put</text>
+</g>
+<g >
+<title>Book::deleteLimit (173,055,527 samples, 0.90%)</title><rect x="245.1" y="565" width="10.6" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="248.13" y="575.5" ></text>
+</g>
+<g >
+<title>new_do_write (2,186,264,294 samples, 11.36%)</title><rect x="316.3" y="533" width="134.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="319.30" y="543.5" >new_do_write</text>
+</g>
+<g >
+<title>queue_work_on (458,535,696 samples, 2.38%)</title><rect x="385.6" y="261" width="28.1" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="388.55" y="271.5" >q..</text>
+</g>
+<g >
+<title>add_wait_queue (59,524,736 samples, 0.31%)</title><rect x="594.7" y="229" width="3.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="597.74" y="239.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_overflow (2,186,264,294 samples, 11.36%)</title><rect x="316.3" y="565" width="134.1" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="319.30" y="575.5" >_IO_new_file_ove..</text>
+</g>
+<g >
+<title>__calc_delta.constprop.0 (33,275,843 samples, 0.17%)</title><rect x="959.8" y="469" width="2.0" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="962.76" y="479.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (166,732,484 samples, 0.87%)</title><rect x="1169.3" y="533" width="10.2" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1172.28" y="543.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_overflow (947,101,674 samples, 4.92%)</title><rect x="670.5" y="485" width="58.1" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="673.48" y="495.5" >_IO_ne..</text>
+</g>
+<g >
+<title>native_send_call_func_single_ipi (86,862,337 samples, 0.45%)</title><rect x="612.5" y="69" width="5.4" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="615.53" y="79.5" ></text>
+</g>
+<g >
+<title>Book::insert (145,670,764 samples, 0.76%)</title><rect x="263.2" y="565" width="8.9" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="266.16" y="575.5" ></text>
+</g>
+<g >
+<title>srso_alias_safe_ret (31,181,115 samples, 0.16%)</title><rect x="147.1" y="261" width="1.9" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="150.09" y="271.5" ></text>
+</g>
+<g >
+<title>__check_object_size (31,106,167 samples, 0.16%)</title><rect x="120.1" y="325" width="1.9" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="123.06" y="335.5" ></text>
+</g>
+<g >
+<title>__schedule (1,167,748,338 samples, 6.07%)</title><rect x="894.5" y="517" width="71.6" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="897.51" y="527.5" >__schedule</text>
+</g>
+<g >
+<title>Book::balance (60,538,993 samples, 0.31%)</title><rect x="273.9" y="549" width="3.8" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="276.95" y="559.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (60,545,334 samples, 0.31%)</title><rect x="218.9" y="533" width="3.7" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="221.88" y="543.5" ></text>
+</g>
+<g >
+<title>add_wait_queue (33,352,026 samples, 0.17%)</title><rect x="585.6" y="245" width="2.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="588.64" y="255.5" ></text>
+</g>
+<g >
+<title>perf_event_task_tick (29,103,977 samples, 0.15%)</title><rect x="778.0" y="277" width="1.8" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="781.01" y="287.5" ></text>
+</g>
+<g >
+<title>__llround (237,070,539 samples, 1.23%)</title><rect x="475.0" y="549" width="14.5" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="477.98" y="559.5" ></text>
+</g>
+<g >
+<title>select_task_rq_fair (54,638,191 samples, 0.28%)</title><rect x="708.7" y="101" width="3.4" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="711.73" y="111.5" ></text>
+</g>
+<g >
+<title>Book::deleteLimit (151,715,616 samples, 0.79%)</title><rect x="57.2" y="565" width="9.3" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="60.17" y="575.5" ></text>
+</g>
+<g >
+<title>do_output_char (213,177,642 samples, 1.11%)</title><rect x="135.9" y="309" width="13.1" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="138.93" y="319.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Map_base&lt;int, std::pair&lt;int const, baseline::Order*&gt;, std::allocator&lt;std::pair&lt;int const, baseline::Order*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;int&gt;, std::hash&lt;int&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt;, true&gt;::operator[] (31,497,952 samples, 0.16%)</title><rect x="814.8" y="517" width="1.9" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="817.81" y="527.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (804,732,271 samples, 4.18%)</title><rect x="672.3" y="341" width="49.4" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="675.34" y="351.5" >x64_..</text>
+</g>
+<g >
+<title>__vm_munmap (40,188,278 samples, 0.21%)</title><rect x="531.0" y="453" width="2.4" height="15.0" fill="rgb(231,121,28)" rx="2" ry="2" />
+<text  x="533.98" y="463.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (36,766,152 samples, 0.19%)</title><rect x="342.4" y="309" width="2.2" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="345.38" y="319.5" ></text>
+</g>
+<g >
+<title>file_tty_write.isra.0 (1,480,771,585 samples, 7.70%)</title><rect x="338.0" y="325" width="90.8" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="341.00" y="335.5" >file_tty_w..</text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (77,854,377 samples, 0.40%)</title><rect x="816.7" y="533" width="4.8" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="819.74" y="543.5" ></text>
+</g>
+<g >
+<title>Book::balance (36,231,706 samples, 0.19%)</title><rect x="1161.0" y="533" width="2.2" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1163.96" y="543.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getRightChild (29,845,395 samples, 0.16%)</title><rect x="647.1" y="453" width="1.8" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="650.10" y="463.5" ></text>
+</g>
+<g >
+<title>__syscall_cancel (947,101,674 samples, 4.92%)</title><rect x="670.5" y="405" width="58.1" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="673.48" y="415.5" >__sysc..</text>
+</g>
+<g >
+<title>ext4_da_write_begin (103,754,206 samples, 0.54%)</title><rect x="1034.2" y="437" width="6.4" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1037.19" y="447.5" ></text>
+</g>
+<g >
+<title>std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::_M_insert_int&lt;long&gt; (30,507,868 samples, 0.16%)</title><rect x="81.3" y="565" width="1.8" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="84.26" y="575.5" ></text>
+</g>
+<g >
+<title>hv_set_register (25,867,721 samples, 0.13%)</title><rect x="745.6" y="309" width="1.6" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="748.57" y="319.5" ></text>
+</g>
+<g >
+<title>main (5,957,799,179 samples, 30.96%)</title><rect x="456.2" y="565" width="365.3" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="459.17" y="575.5" >main</text>
+</g>
+<g >
+<title>srso_alias_safe_ret (30,829,406 samples, 0.16%)</title><rect x="208.0" y="453" width="1.9" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="211.02" y="463.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (25,867,721 samples, 0.13%)</title><rect x="745.6" y="373" width="1.6" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="748.57" y="383.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (110,266,618 samples, 0.57%)</title><rect x="784.2" y="469" width="6.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="787.20" y="479.5" ></text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp; std::__ostream_insert&lt;char, std::char_traits&lt;char&gt; &gt; (69,030,338 samples, 0.36%)</title><rect x="305.5" y="597" width="4.2" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="308.46" y="607.5" ></text>
+</g>
+<g >
+<title>security_file_permission (28,824,957 samples, 0.15%)</title><rect x="103.6" y="341" width="1.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="106.61" y="351.5" ></text>
+</g>
+<g >
+<title>Book::balance (181,116,660 samples, 0.94%)</title><rect x="287.6" y="565" width="11.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="290.64" y="575.5" ></text>
+</g>
+<g >
+<title>tty_update_time (34,911,079 samples, 0.18%)</title><rect x="715.9" y="245" width="2.2" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="718.94" y="255.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_stimer0 (32,026,042 samples, 0.17%)</title><rect x="277.7" y="533" width="1.9" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="280.66" y="543.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (29,103,977 samples, 0.15%)</title><rect x="778.0" y="373" width="1.8" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="781.01" y="383.5" ></text>
+</g>
+<g >
+<title>__queue_work.part.0 (569,747,021 samples, 2.96%)</title><rect x="154.7" y="245" width="34.9" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="157.65" y="255.5" >__..</text>
+</g>
+<g >
+<title>Book::searchOrderMap (2,366,449,345 samples, 12.30%)</title><rect x="70.1" y="597" width="145.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="73.05" y="607.5" >Book::searchOrderMap</text>
+</g>
+<g >
+<title>do_user_addr_fault (40,833,026 samples, 0.21%)</title><rect x="533.4" y="517" width="2.5" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="536.44" y="527.5" ></text>
+</g>
+<g >
+<title>baseline::Book::marketOrderHelper (366,013,951 samples, 1.90%)</title><rect x="743.7" y="517" width="22.4" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="746.67" y="527.5" >b..</text>
+</g>
+<g >
+<title>__libc_free (26,815,570 samples, 0.14%)</title><rect x="654.5" y="469" width="1.7" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="657.52" y="479.5" ></text>
+</g>
+<g >
+<title>_IO_fwrite (54,993,349 samples, 0.29%)</title><rect x="558.7" y="485" width="3.4" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="561.69" y="495.5" ></text>
+</g>
+<g >
+<title>pty_write (448,051,428 samples, 2.33%)</title><rect x="688.5" y="229" width="27.4" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="691.47" y="239.5" >p..</text>
+</g>
+<g >
+<title>Book::modifyLimitOrder (27,457,280 samples, 0.14%)</title><rect x="68.4" y="597" width="1.7" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="71.37" y="607.5" ></text>
+</g>
+<g >
+<title>__list_add_valid_or_report (35,963,894 samples, 0.19%)</title><rect x="944.6" y="485" width="2.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="947.63" y="495.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (83,782,175 samples, 0.44%)</title><rect x="263.2" y="533" width="5.1" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="266.16" y="543.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (206,096,219 samples, 1.07%)</title><rect x="703.3" y="117" width="12.6" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="706.30" y="127.5" ></text>
+</g>
+<g >
+<title>filemap_alloc_folio (35,361,424 samples, 0.18%)</title><rect x="1038.4" y="405" width="2.2" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1041.38" y="415.5" ></text>
+</g>
+<g >
+<title>fput (36,491,314 samples, 0.19%)</title><rect x="323.0" y="373" width="2.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="326.03" y="383.5" ></text>
+</g>
+<g >
+<title>file_tty_write.isra.0 (627,933,826 samples, 3.26%)</title><rect x="681.4" y="261" width="38.5" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="684.35" y="271.5" >fil..</text>
+</g>
+<g >
+<title>Book::insert (59,001,542 samples, 0.31%)</title><rect x="241.5" y="517" width="3.6" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="244.52" y="527.5" ></text>
+</g>
+<g >
+<title>wake_up_process (114,006,439 samples, 0.59%)</title><rect x="610.9" y="133" width="7.0" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="613.86" y="143.5" ></text>
+</g>
+<g >
+<title>vfs_writev (139,127,457 samples, 0.72%)</title><rect x="1032.0" y="533" width="8.6" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1035.02" y="543.5" ></text>
+</g>
+<g >
+<title>tty_update_time (34,378,423 samples, 0.18%)</title><rect x="428.8" y="325" width="2.1" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="431.80" y="335.5" ></text>
+</g>
+<g >
+<title>check_cfs_rq_runtime (73,069,979 samples, 0.38%)</title><rect x="920.6" y="501" width="4.5" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="923.63" y="511.5" ></text>
+</g>
+<g >
+<title>Book::insert (28,715,645 samples, 0.15%)</title><rect x="243.4" y="501" width="1.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="246.37" y="511.5" ></text>
+</g>
+<g >
+<title>Book::balance (36,902,961 samples, 0.19%)</title><rect x="1158.7" y="549" width="2.3" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1161.70" y="559.5" ></text>
+</g>
+<g >
+<title>Book::balance (36,946,140 samples, 0.19%)</title><rect x="1133.3" y="501" width="2.3" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1136.34" y="511.5" ></text>
+</g>
+<g >
+<title>void Book::matchOrder&lt;false&gt; (493,831,057 samples, 2.57%)</title><rect x="1120.2" y="613" width="30.3" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1123.24" y="623.5" >vo..</text>
+</g>
+<g >
+<title>asm_exc_page_fault (40,833,026 samples, 0.21%)</title><rect x="533.4" y="549" width="2.5" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="536.44" y="559.5" ></text>
+</g>
+<g >
+<title>__x64_sys_writev (139,127,457 samples, 0.72%)</title><rect x="1032.0" y="565" width="8.6" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="1035.02" y="575.5" ></text>
+</g>
+<g >
+<title>baseline::Book::addLimit (158,450,898 samples, 0.82%)</title><rect x="732.3" y="517" width="9.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="735.31" y="527.5" ></text>
+</g>
+<g >
+<title>void baseline::Book::matchOrder&lt;true&gt; (710,881,133 samples, 3.69%)</title><rect x="773.1" y="533" width="43.6" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="776.15" y="543.5" >void..</text>
+</g>
+<g >
+<title>__tty_insert_flip_string_flags (35,626,917 samples, 0.19%)</title><rect x="383.4" y="261" width="2.2" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="386.37" y="271.5" ></text>
+</g>
+<g >
+<title>queue_work_on (31,940,445 samples, 0.17%)</title><rect x="688.5" y="213" width="1.9" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="691.47" y="223.5" ></text>
+</g>
+<g >
+<title>Book::balance (72,492,152 samples, 0.38%)</title><rect x="1122.4" y="565" width="4.5" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1125.41" y="575.5" ></text>
+</g>
+<g >
+<title>Book::balance (89,396,785 samples, 0.46%)</title><rect x="228.5" y="549" width="5.5" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="231.54" y="559.5" ></text>
+</g>
+<g >
+<title>__pv_queued_spin_lock_slowpath (245,634,795 samples, 1.28%)</title><rect x="387.7" y="197" width="15.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="390.66" y="207.5" ></text>
+</g>
+<g >
+<title>Limit::append (35,520,986 samples, 0.18%)</title><rect x="450.4" y="613" width="2.1" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="453.36" y="623.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getRightChild (29,882,219 samples, 0.16%)</title><rect x="794.6" y="373" width="1.8" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="797.60" y="383.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (72,492,152 samples, 0.38%)</title><rect x="1122.4" y="549" width="4.5" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1125.41" y="559.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (240,390,638 samples, 1.25%)</title><rect x="781.7" y="501" width="14.7" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="784.69" y="511.5" ></text>
+</g>
+<g >
+<title>std::ostream::sentry::sentry (60,070,443 samples, 0.31%)</title><rect x="75.6" y="565" width="3.7" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="78.64" y="575.5" ></text>
+</g>
+<g >
+<title>tty_write (1,489,556,429 samples, 7.74%)</title><rect x="107.2" y="357" width="91.3" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="110.19" y="367.5" >tty_write</text>
+</g>
+<g >
+<title>std::locale::id::_M_id (25,260,924 samples, 0.13%)</title><rect x="667.0" y="453" width="1.5" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="669.98" y="463.5" ></text>
+</g>
+<g >
+<title>do_output_char (177,046,054 samples, 0.92%)</title><rect x="368.1" y="293" width="10.9" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="371.10" y="303.5" ></text>
+</g>
+<g >
+<title>ksys_mmap_pgoff (13,724,337 samples, 0.07%)</title><rect x="821.5" y="373" width="0.9" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="824.53" y="383.5" ></text>
+</g>
+<g >
+<title>Book::addLimit (206,374,265 samples, 1.07%)</title><rect x="1150.5" y="597" width="12.7" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="1153.52" y="607.5" ></text>
+</g>
+<g >
+<title>rw_verify_area (56,560,760 samples, 0.29%)</title><rect x="677.9" y="277" width="3.5" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="680.88" y="287.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (35,950,674 samples, 0.19%)</title><rect x="875.1" y="549" width="2.2" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="878.11" y="559.5" ></text>
+</g>
+<g >
+<title>__pick_eevdf (176,656,632 samples, 0.92%)</title><rect x="946.8" y="469" width="10.9" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="949.83" y="479.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (34,159,312 samples, 0.18%)</title><rect x="736.1" y="453" width="2.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="739.09" y="463.5" ></text>
+</g>
+<g >
+<title>__x64_sys_munmap (40,188,278 samples, 0.21%)</title><rect x="531.0" y="469" width="2.4" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="533.98" y="479.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (214,908,824 samples, 1.12%)</title><rect x="176.4" y="197" width="13.2" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="179.41" y="207.5" ></text>
+</g>
+<g >
+<title>Book::balance (151,715,616 samples, 0.79%)</title><rect x="57.2" y="549" width="9.3" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="60.17" y="559.5" ></text>
+</g>
+<g >
+<title>ttwu_queue_wakelist (71,143,703 samples, 0.37%)</title><rect x="404.8" y="165" width="4.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="407.84" y="175.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (24,480,417 samples, 0.13%)</title><rect x="598.4" y="181" width="1.5" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="601.39" y="191.5" ></text>
+</g>
+<g >
+<title>_copy_from_iter (34,532,876 samples, 0.18%)</title><rect x="340.3" y="309" width="2.1" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="343.27" y="319.5" ></text>
+</g>
+<g >
+<title>pty_write (24,480,417 samples, 0.13%)</title><rect x="598.4" y="213" width="1.5" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="601.39" y="223.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (139,340,126 samples, 0.72%)</title><rect x="773.1" y="485" width="8.6" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="776.15" y="495.5" ></text>
+</g>
+<g >
+<title>void std::__sort&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (62,948,362 samples, 0.33%)</title><rect x="281.5" y="597" width="3.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="284.53" y="607.5" ></text>
+</g>
+<g >
+<title>pick_next_task_fair (561,598,237 samples, 2.92%)</title><rect x="929.5" y="501" width="34.4" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="932.50" y="511.5" >pi..</text>
+</g>
+<g >
+<title>baseline::Limit::getRightChild (30,373,421 samples, 0.16%)</title><rect x="656.2" y="453" width="1.8" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="659.17" y="463.5" ></text>
+</g>
+<g >
+<title>Order::cancel (37,308,449 samples, 0.19%)</title><rect x="303.2" y="597" width="2.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="306.17" y="607.5" ></text>
+</g>
+<g >
+<title>std::_Hashtable&lt;int, std::pair&lt;int const, baseline::Limit*&gt;, std::allocator&lt;std::pair&lt;int const, baseline::Limit*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;int&gt;, std::hash&lt;int&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt; &gt;::erase (59,538,651 samples, 0.31%)</title><rect x="760.6" y="485" width="3.6" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="763.56" y="495.5" ></text>
+</g>
+<g >
+<title>__wake_up (58,300,432 samples, 0.30%)</title><rect x="582.1" y="245" width="3.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="585.07" y="255.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (173,055,527 samples, 0.90%)</title><rect x="245.1" y="533" width="10.6" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="248.13" y="543.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (25,599,951 samples, 0.13%)</title><rect x="819.9" y="453" width="1.6" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="822.95" y="463.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (30,160,181 samples, 0.16%)</title><rect x="283.5" y="533" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="286.54" y="543.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (35,336,799 samples, 0.18%)</title><rect x="1120.2" y="565" width="2.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1123.24" y="575.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (25,599,951 samples, 0.13%)</title><rect x="819.9" y="501" width="1.6" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="822.95" y="511.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_stimer0 (25,867,721 samples, 0.13%)</title><rect x="745.6" y="437" width="1.6" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="748.57" y="447.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (40,188,278 samples, 0.21%)</title><rect x="531.0" y="501" width="2.4" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="533.98" y="511.5" ></text>
+</g>
+<g >
+<title>__wake_up (53,459,896 samples, 0.28%)</title><rect x="122.0" y="325" width="3.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="124.97" y="335.5" ></text>
+</g>
+<g >
+<title>_IO_fwrite (31,836,238 samples, 0.17%)</title><rect x="665.0" y="485" width="2.0" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="668.02" y="495.5" ></text>
+</g>
+<g >
+<title>Book::marketOrderHelper (243,359,556 samples, 1.26%)</title><rect x="1135.6" y="597" width="14.9" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1138.60" y="607.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (96,786,119 samples, 0.50%)</title><rect x="736.1" y="485" width="5.9" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="739.09" y="495.5" ></text>
+</g>
+<g >
+<title>void Book::matchOrder&lt;false&gt; (509,372,446 samples, 2.65%)</title><rect x="224.5" y="597" width="31.2" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="227.51" y="607.5" >vo..</text>
+</g>
+<g >
+<title>baseline::Limit::getRightChild (31,568,009 samples, 0.16%)</title><rect x="734.2" y="453" width="1.9" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="737.16" y="463.5" ></text>
+</g>
+<g >
+<title>std::ostream::sentry::sentry (34,473,061 samples, 0.18%)</title><rect x="1118.1" y="597" width="2.1" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="1121.13" y="607.5" ></text>
+</g>
+<g >
+<title>__libc_write (1,148,204,895 samples, 5.97%)</title><rect x="565.8" y="421" width="70.4" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="568.79" y="431.5" >__libc_..</text>
+</g>
+<g >
+<title>do_output_char (30,673,854 samples, 0.16%)</title><rect x="587.7" y="245" width="1.9" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="590.69" y="255.5" ></text>
+</g>
+<g >
+<title>Limit::getLeftChild (31,038,651 samples, 0.16%)</title><rect x="261.3" y="517" width="1.9" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="264.26" y="527.5" ></text>
+</g>
+<g >
+<title>idr_find (29,522,065 samples, 0.15%)</title><rect x="617.9" y="165" width="1.8" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="620.86" y="175.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (60,538,993 samples, 0.31%)</title><rect x="273.9" y="517" width="3.8" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="276.95" y="527.5" ></text>
+</g>
+<g >
+<title>std::__detail::_Map_base&lt;int, std::pair&lt;int const, baseline::Order*&gt;, std::allocator&lt;std::pair&lt;int const, baseline::Order*&gt; &gt;, std::__detail::_Select1st, std::equal_to&lt;int&gt;, std::hash&lt;int&gt;, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits&lt;false, false, true&gt;, true&gt;::operator[] (55,052,603 samples, 0.29%)</title><rect x="769.8" y="517" width="3.3" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="772.77" y="527.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_overflow (2,067,407,395 samples, 10.74%)</title><rect x="85.0" y="565" width="126.8" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="88.00" y="575.5" >_IO_new_file_ov..</text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (31,508,150 samples, 0.16%)</title><rect x="658.0" y="437" width="2.0" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="661.03" y="447.5" ></text>
+</g>
+<g >
+<title>tty_insert_flip_string_and_push_buffer (322,469,830 samples, 1.68%)</title><rect x="599.9" y="213" width="19.8" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="602.89" y="223.5" ></text>
+</g>
+<g >
+<title>__fget_light (33,525,840 samples, 0.17%)</title><rect x="327.3" y="341" width="2.1" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="330.32" y="351.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (31,836,238 samples, 0.17%)</title><rect x="665.0" y="469" width="2.0" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="668.02" y="479.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (111,458,130 samples, 0.58%)</title><rect x="774.9" y="469" width="6.8" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="777.86" y="479.5" ></text>
+</g>
+<g >
+<title>Book::insert (36,231,706 samples, 0.19%)</title><rect x="1161.0" y="549" width="2.2" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1163.96" y="559.5" ></text>
+</g>
+<g >
+<title>Book::balance (83,782,175 samples, 0.44%)</title><rect x="263.2" y="549" width="5.1" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="266.16" y="559.5" ></text>
+</g>
+<g >
+<title>sched_clock (32,740,472 samples, 0.17%)</title><rect x="1021.9" y="485" width="2.0" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="1024.87" y="495.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (62,948,362 samples, 0.33%)</title><rect x="281.5" y="565" width="3.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="284.53" y="575.5" ></text>
+</g>
+<g >
+<title>__queue_work (36,576,831 samples, 0.19%)</title><rect x="368.1" y="245" width="2.2" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="371.10" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (30,373,421 samples, 0.16%)</title><rect x="656.2" y="501" width="1.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="659.17" y="511.5" ></text>
+</g>
+<g >
+<title>std::ostream::put (2,153,175,196 samples, 11.19%)</title><rect x="83.1" y="581" width="132.1" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="86.13" y="591.5" >std::ostream::put</text>
+</g>
+<g >
+<title>baseline::Book::insert (31,508,150 samples, 0.16%)</title><rect x="658.0" y="501" width="2.0" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="661.03" y="511.5" ></text>
+</g>
+<g >
+<title>Book::insert (181,294,310 samples, 0.94%)</title><rect x="234.0" y="549" width="11.1" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="237.02" y="559.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_prepare (73,010,483 samples, 0.38%)</title><rect x="868.4" y="565" width="4.5" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="871.44" y="575.5" ></text>
+</g>
+<g >
+<title>Book::insert (270,691,095 samples, 1.41%)</title><rect x="228.5" y="565" width="16.6" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="231.54" y="575.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (30,850,591 samples, 0.16%)</title><rect x="1188.1" y="549" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1191.11" y="559.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (36,902,961 samples, 0.19%)</title><rect x="1158.7" y="533" width="2.3" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1161.70" y="543.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (34,974,414 samples, 0.18%)</title><rect x="1128.9" y="501" width="2.2" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1131.95" y="511.5" ></text>
+</g>
+<g >
+<title>unmap_region.constprop.0 (40,188,278 samples, 0.21%)</title><rect x="531.0" y="405" width="2.4" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="533.98" y="415.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (64,025,798 samples, 0.33%)</title><rect x="1186.1" y="581" width="3.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1189.07" y="591.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (133,239,598 samples, 0.69%)</title><rect x="1150.5" y="565" width="8.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1153.52" y="575.5" ></text>
+</g>
+<g >
+<title>entry_SYSRETQ_unsafe_stack (147,148,339 samples, 0.76%)</title><rect x="627.2" y="373" width="9.0" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="630.18" y="383.5" ></text>
+</g>
+<g >
+<title>ttwu_queue_wakelist (94,445,947 samples, 0.49%)</title><rect x="183.8" y="181" width="5.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="186.80" y="191.5" ></text>
+</g>
+<g >
+<title>tlb_finish_mmu (40,188,278 samples, 0.21%)</title><rect x="531.0" y="389" width="2.4" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="533.98" y="399.5" ></text>
+</g>
+<g >
+<title>std::ostream::flush (34,473,061 samples, 0.18%)</title><rect x="1118.1" y="613" width="2.1" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="1121.13" y="623.5" ></text>
+</g>
+<g >
+<title>add_wait_queue (36,545,582 samples, 0.19%)</title><rect x="365.9" y="293" width="2.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="368.86" y="303.5" ></text>
+</g>
+<g >
+<title>dl_main (13,724,337 samples, 0.07%)</title><rect x="821.5" y="549" width="0.9" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="824.53" y="559.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock (34,448,321 samples, 0.18%)</title><rect x="402.7" y="213" width="2.1" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="405.73" y="223.5" ></text>
+</g>
+<g >
+<title>__alloc_pages (55,714,747 samples, 0.29%)</title><rect x="546.3" y="405" width="3.4" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="549.30" y="415.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (92,955,245 samples, 0.48%)</title><rect x="234.0" y="517" width="5.7" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="237.02" y="527.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (13,724,337 samples, 0.07%)</title><rect x="821.5" y="405" width="0.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="824.53" y="415.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (57,240,366 samples, 0.30%)</title><rect x="818.0" y="517" width="3.5" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="821.01" y="527.5" ></text>
+</g>
+<g >
+<title>tty_insert_flip_string_and_push_buffer (24,480,417 samples, 0.13%)</title><rect x="598.4" y="197" width="1.5" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="601.39" y="207.5" ></text>
+</g>
+<g >
+<title>file_tty_write.isra.0 (764,967,228 samples, 3.98%)</title><rect x="578.5" y="261" width="46.9" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="581.47" y="271.5" >file..</text>
+</g>
+<g >
+<title>update_rq_clock (240,715,676 samples, 1.25%)</title><rect x="1009.1" y="517" width="14.8" height="15.0" fill="rgb(231,119,28)" rx="2" ry="2" />
+<text  x="1012.11" y="527.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (29,106,706 samples, 0.15%)</title><rect x="792.8" y="437" width="1.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="795.82" y="447.5" ></text>
+</g>
+<g >
+<title>syscall_exit_to_user_mode (73,010,483 samples, 0.38%)</title><rect x="868.4" y="581" width="4.5" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="871.44" y="591.5" ></text>
+</g>
+<g >
+<title>__block_write_begin_int (68,392,782 samples, 0.36%)</title><rect x="1034.2" y="405" width="4.2" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1037.19" y="415.5" ></text>
+</g>
+<g >
+<title>_IO_putc (2,186,264,294 samples, 11.36%)</title><rect x="316.3" y="581" width="134.1" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="319.30" y="591.5" >_IO_putc</text>
+</g>
+<g >
+<title>release_pages (40,188,278 samples, 0.21%)</title><rect x="531.0" y="341" width="2.4" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="533.98" y="351.5" ></text>
+</g>
+<g >
+<title>llist_add_batch (62,982,650 samples, 0.33%)</title><rect x="712.1" y="85" width="3.8" height="15.0" fill="rgb(231,121,28)" rx="2" ry="2" />
+<text  x="715.08" y="95.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (31,259,297 samples, 0.16%)</title><rect x="268.3" y="501" width="1.9" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="271.30" y="511.5" ></text>
+</g>
+<g >
+<title>void baseline::Book::matchOrder&lt;false&gt; (696,982,442 samples, 3.62%)</title><rect x="730.4" y="533" width="42.7" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="733.41" y="543.5" >void..</text>
+</g>
+<g >
+<title>__internal_syscall_cancel (2,149,923,659 samples, 11.17%)</title><rect x="318.5" y="469" width="131.9" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="321.52" y="479.5" >__internal_sysca..</text>
+</g>
+<g >
+<title>baseline::Limit::getLeftChild (34,159,312 samples, 0.18%)</title><rect x="736.1" y="421" width="2.1" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="739.09" y="431.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (13,724,337 samples, 0.07%)</title><rect x="821.5" y="437" width="0.9" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="824.53" y="447.5" ></text>
+</g>
+<g >
+<title>Book::addLimitOrder (36,675,558 samples, 0.19%)</title><rect x="285.4" y="613" width="2.2" height="15.0" fill="rgb(211,29,6)" rx="2" ry="2" />
+<text  x="288.39" y="623.5" ></text>
+</g>
+<g >
+<title>baseline::Book::addLimit (410,388,734 samples, 2.13%)</title><rect x="773.1" y="517" width="25.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="776.15" y="527.5" >b..</text>
+</g>
+<g >
+<title>Book::insert (31,259,297 samples, 0.16%)</title><rect x="268.3" y="549" width="1.9" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="271.30" y="559.5" ></text>
+</g>
+<g >
+<title>rw_verify_area (36,977,934 samples, 0.19%)</title><rect x="333.7" y="341" width="2.2" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="336.65" y="351.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (30,465,685 samples, 0.16%)</title><rect x="217.0" y="597" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="220.01" y="607.5" ></text>
+</g>
+<g >
+<title>baseline::Book::deleteLimit (176,805,200 samples, 0.92%)</title><rect x="804.0" y="501" width="10.8" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="806.97" y="511.5" ></text>
+</g>
+<g >
+<title>entry_SYSRETQ_unsafe_stack (154,716,565 samples, 0.80%)</title><rect x="198.5" y="453" width="9.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="201.53" y="463.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (31,508,150 samples, 0.16%)</title><rect x="658.0" y="469" width="2.0" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="661.03" y="479.5" ></text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp; std::__ostream_insert&lt;char, std::char_traits&lt;char&gt; &gt; (31,836,238 samples, 0.17%)</title><rect x="665.0" y="501" width="2.0" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="668.02" y="511.5" ></text>
+</g>
+<g >
+<title>ext4_es_insert_delayed_block (33,481,787 samples, 0.17%)</title><rect x="1036.3" y="373" width="2.1" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1039.33" y="383.5" ></text>
+</g>
+<g >
+<title>exit_to_user_mode_prepare (30,657,341 samples, 0.16%)</title><rect x="92.7" y="405" width="1.9" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="95.68" y="415.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_write (28,002,631 samples, 0.15%)</title><rect x="452.5" y="613" width="1.8" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="455.54" y="623.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (31,836,238 samples, 0.17%)</title><rect x="665.0" y="453" width="2.0" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="668.02" y="463.5" ></text>
+</g>
+<g >
+<title>do_anonymous_page (60,545,334 samples, 0.31%)</title><rect x="218.9" y="517" width="3.7" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="221.88" y="527.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (176,805,200 samples, 0.92%)</title><rect x="804.0" y="485" width="10.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="806.97" y="495.5" ></text>
+</g>
+<g >
+<title>security_file_permission (56,560,760 samples, 0.29%)</title><rect x="677.9" y="261" width="3.5" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="680.88" y="271.5" ></text>
+</g>
+<g >
+<title>clockevents_program_event (25,867,721 samples, 0.13%)</title><rect x="745.6" y="341" width="1.6" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="748.57" y="351.5" ></text>
+</g>
+<g >
+<title>__queue_work (389,503,435 samples, 2.02%)</title><rect x="692.1" y="181" width="23.8" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="695.06" y="191.5" >_..</text>
+</g>
+<g >
+<title>x64_sys_call (2,733,591,597 samples, 14.21%)</title><rect x="872.9" y="581" width="167.7" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="875.92" y="591.5" >x64_sys_call</text>
+</g>
+<g >
+<title>Book::limitHeightDifference (34,974,414 samples, 0.18%)</title><rect x="1128.9" y="517" width="2.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1131.95" y="527.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (57,267,149 samples, 0.30%)</title><rect x="723.3" y="357" width="3.5" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="726.26" y="367.5" ></text>
+</g>
+<g >
+<title>do_sched_yield (2,390,016,218 samples, 12.42%)</title><rect x="877.3" y="549" width="146.6" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="880.31" y="559.5" >do_sched_yield</text>
+</g>
+<g >
+<title>native_write_msr (25,867,721 samples, 0.13%)</title><rect x="745.6" y="293" width="1.6" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="748.57" y="303.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.35] (25,260,924 samples, 0.13%)</title><rect x="667.0" y="469" width="1.5" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="669.98" y="479.5" ></text>
+</g>
+<g >
+<title>__queue_work.part.0 (387,885,261 samples, 2.02%)</title><rect x="387.7" y="229" width="23.7" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="390.66" y="239.5" >_..</text>
+</g>
+<g >
+<title>Book::limitHeightDifference (29,337,523 samples, 0.15%)</title><rect x="239.7" y="501" width="1.8" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="242.72" y="511.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (140,216,328 samples, 0.73%)</title><rect x="1139.8" y="549" width="8.6" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1142.77" y="559.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getLeftChild (58,735,017 samples, 0.31%)</title><rect x="811.2" y="437" width="3.6" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="814.21" y="447.5" ></text>
+</g>
+<g >
+<title>tick_program_event (25,867,721 samples, 0.13%)</title><rect x="745.6" y="357" width="1.6" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="748.57" y="367.5" ></text>
+</g>
+<g >
+<title>kick_pool (214,908,824 samples, 1.12%)</title><rect x="176.4" y="229" width="13.2" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="179.41" y="239.5" ></text>
+</g>
+<g >
+<title>do_user_addr_fault (85,432,895 samples, 0.44%)</title><rect x="544.5" y="501" width="5.2" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="547.48" y="511.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (72,258,328 samples, 0.38%)</title><rect x="1044.6" y="597" width="4.4" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1047.57" y="607.5" ></text>
+</g>
+<g >
+<title>up_read (28,955,506 samples, 0.15%)</title><rect x="718.1" y="245" width="1.8" height="15.0" fill="rgb(209,18,4)" rx="2" ry="2" />
+<text  x="721.08" y="255.5" ></text>
+</g>
+<g >
+<title>Book::modifyLimitOrder (109,507,113 samples, 0.57%)</title><rect x="298.7" y="613" width="6.8" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="301.74" y="623.5" ></text>
+</g>
+<g >
+<title>__irqentry_text_end (31,125,231 samples, 0.16%)</title><rect x="454.3" y="597" width="1.9" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="457.26" y="607.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getLimitPrice (30,198,401 samples, 0.16%)</title><rect x="766.1" y="517" width="1.9" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="769.12" y="527.5" ></text>
+</g>
+<g >
+<title>Order::getShares (36,818,441 samples, 0.19%)</title><rect x="1183.8" y="581" width="2.3" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="1186.82" y="591.5" ></text>
+</g>
+<g >
+<title>Limit::getLeftChild (30,802,328 samples, 0.16%)</title><rect x="253.9" y="517" width="1.8" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="256.86" y="527.5" ></text>
+</g>
+<g >
+<title>__libc_write (947,101,674 samples, 4.92%)</title><rect x="670.5" y="421" width="58.1" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="673.48" y="431.5" >__libc..</text>
+</g>
+<g >
+<title>__raw_callee_save___pv_queued_spin_unlock (36,322,694 samples, 0.19%)</title><rect x="888.0" y="517" width="2.2" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="890.99" y="527.5" ></text>
+</g>
+<g >
+<title>pty_write (661,877,184 samples, 3.44%)</title><rect x="149.0" y="309" width="40.6" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="152.00" y="319.5" >pty..</text>
+</g>
+<g >
+<title>Limit::getRightChild (34,792,852 samples, 0.18%)</title><rect x="1156.6" y="533" width="2.1" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1159.56" y="543.5" ></text>
+</g>
+<g >
+<title>__raw_callee_save___pv_queued_spin_unlock (35,398,396 samples, 0.18%)</title><rect x="918.5" y="485" width="2.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="921.46" y="495.5" ></text>
+</g>
+<g >
+<title>entry_SYSRETQ_unsafe_stack (180,273,511 samples, 0.94%)</title><rect x="437.3" y="437" width="11.0" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="440.26" y="447.5" ></text>
+</g>
+<g >
+<title>__task_rq_lock (27,144,102 samples, 0.14%)</title><rect x="610.9" y="101" width="1.6" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="613.86" y="111.5" ></text>
+</g>
+<g >
+<title>call_function_single_prep_ipi (35,603,461 samples, 0.19%)</title><rect x="407.0" y="149" width="2.2" height="15.0" fill="rgb(213,41,9)" rx="2" ry="2" />
+<text  x="410.02" y="159.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (72,492,152 samples, 0.38%)</title><rect x="1122.4" y="533" width="4.5" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1125.41" y="543.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (36,902,961 samples, 0.19%)</title><rect x="1158.7" y="517" width="2.3" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1161.70" y="527.5" ></text>
+</g>
+<g >
+<title>tty_insert_flip_string_and_push_buffer (494,162,613 samples, 2.57%)</title><rect x="383.4" y="277" width="30.3" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="386.37" y="287.5" >tt..</text>
+</g>
+<g >
+<title>native_send_call_func_single_ipi (35,540,242 samples, 0.18%)</title><rect x="404.8" y="133" width="2.2" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="407.84" y="143.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (69,376,612 samples, 0.36%)</title><rect x="1144.1" y="533" width="4.3" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1147.11" y="543.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getLeftChild (52,063,209 samples, 0.27%)</title><rect x="776.6" y="453" width="3.2" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="779.60" y="463.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (31,508,150 samples, 0.16%)</title><rect x="658.0" y="485" width="2.0" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="661.03" y="495.5" ></text>
+</g>
+<g >
+<title>Limit::getLeftChild (34,928,647 samples, 0.18%)</title><rect x="294.4" y="517" width="2.2" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="297.43" y="527.5" ></text>
+</g>
+<g >
+<title>Book::insert (28,715,645 samples, 0.15%)</title><rect x="243.4" y="485" width="1.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="246.37" y="495.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (29,103,977 samples, 0.15%)</title><rect x="778.0" y="357" width="1.8" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="781.01" y="367.5" ></text>
+</g>
+<g >
+<title>std::ostream::flush (31,258,832 samples, 0.16%)</title><rect x="222.6" y="597" width="1.9" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="225.59" y="607.5" ></text>
+</g>
+<g >
+<title>wake_up_process (71,143,703 samples, 0.37%)</title><rect x="404.8" y="197" width="4.4" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="407.84" y="207.5" ></text>
+</g>
+<g >
+<title>Book::marketOrderHelper (373,329,003 samples, 1.94%)</title><rect x="1163.2" y="597" width="22.9" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1166.18" y="607.5" >B..</text>
+</g>
+<g >
+<title>Book::getLimitHeight (115,322,485 samples, 0.60%)</title><rect x="246.8" y="517" width="7.1" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="249.79" y="527.5" ></text>
+</g>
+<g >
+<title>std::ostream::put (947,101,674 samples, 4.92%)</title><rect x="670.5" y="501" width="58.1" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="673.48" y="511.5" >std::o..</text>
+</g>
+<g >
+<title>baseline::Book::insert (89,288,228 samples, 0.46%)</title><rect x="791.0" y="485" width="5.4" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="793.96" y="495.5" ></text>
+</g>
+<g >
+<title>std::ostream::flush (31,857,852 samples, 0.17%)</title><rect x="668.5" y="501" width="2.0" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="671.53" y="511.5" ></text>
+</g>
+<g >
+<title>mas_next_range (13,724,337 samples, 0.07%)</title><rect x="821.5" y="309" width="0.9" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="824.53" y="319.5" ></text>
+</g>
+<g >
+<title>bench_tool (19,242,468,152 samples, 100.00%)</title><rect x="10.0" y="629" width="1180.0" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="13.00" y="639.5" >bench_tool</text>
+</g>
+<g >
+<title>baseline::Book::marketOrderHelper (236,293,994 samples, 1.23%)</title><rect x="641.7" y="517" width="14.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="644.68" y="527.5" ></text>
+</g>
+<g >
+<title>syscall_exit_to_user_mode (30,657,341 samples, 0.16%)</title><rect x="92.7" y="421" width="1.9" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="95.68" y="431.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (151,690,852 samples, 0.79%)</title><rect x="805.5" y="453" width="9.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="808.51" y="463.5" ></text>
+</g>
+<g >
+<title>Book::searchOrderMap (2,362,961,363 samples, 12.28%)</title><rect x="305.5" y="613" width="144.9" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="308.46" y="623.5" >Book::searchOrderMap</text>
+</g>
+<g >
+<title>hrtimer_interrupt (32,026,042 samples, 0.17%)</title><rect x="277.7" y="469" width="1.9" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="280.66" y="479.5" ></text>
+</g>
+<g >
+<title>Book::insert (27,457,280 samples, 0.14%)</title><rect x="68.4" y="565" width="1.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="71.37" y="575.5" ></text>
+</g>
+<g >
+<title>Limit::getLeftChild (36,231,706 samples, 0.19%)</title><rect x="1161.0" y="485" width="2.2" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="1163.96" y="495.5" ></text>
+</g>
+<g >
+<title>Book::marketOrder (181,116,660 samples, 0.94%)</title><rect x="287.6" y="613" width="11.1" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="290.64" y="623.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (60,545,334 samples, 0.31%)</title><rect x="218.9" y="549" width="3.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="221.88" y="559.5" ></text>
+</g>
+<g >
+<title>run_baseline_workload (4,656,806,169 samples, 24.20%)</title><rect x="535.9" y="549" width="285.6" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="538.95" y="559.5" >run_baseline_workload</text>
+</g>
+<g >
+<title>__pv_queued_spin_lock_slowpath (183,407,216 samples, 0.95%)</title><rect x="692.1" y="133" width="11.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="695.06" y="143.5" ></text>
+</g>
+<g >
+<title>Book::marketOrderHelper (181,116,660 samples, 0.94%)</title><rect x="287.6" y="597" width="11.1" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="290.64" y="607.5" ></text>
+</g>
+<g >
+<title>pty_write (322,469,830 samples, 1.68%)</title><rect x="599.9" y="229" width="19.8" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="602.89" y="239.5" ></text>
+</g>
+<g >
+<title>Book::marketOrderHelper (182,568,222 samples, 0.95%)</title><rect x="57.2" y="581" width="11.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="60.17" y="591.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (61,664,779 samples, 0.32%)</title><rect x="732.3" y="485" width="3.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="735.31" y="495.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (36,280,572 samples, 0.19%)</title><rect x="411.4" y="229" width="2.3" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="414.45" y="239.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (91,831,268 samples, 0.48%)</title><rect x="257.5" y="533" width="5.7" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="260.53" y="543.5" ></text>
+</g>
+<g >
+<title>n_tty_write (29,193,761 samples, 0.15%)</title><rect x="194.9" y="341" width="1.8" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="197.92" y="351.5" ></text>
+</g>
+<g >
+<title>__memcpy (29,178,059 samples, 0.15%)</title><rect x="139.7" y="261" width="1.8" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="142.69" y="271.5" ></text>
+</g>
+<g >
+<title>std::ostream::put (1,180,046,746 samples, 6.13%)</title><rect x="563.8" y="501" width="72.4" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="566.84" y="511.5" >std::ost..</text>
+</g>
+<g >
+<title>Book::limitHeightDifference (36,583,907 samples, 0.19%)</title><rect x="1131.1" y="501" width="2.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1134.09" y="511.5" ></text>
+</g>
+<g >
+<title>down_read (36,036,168 samples, 0.19%)</title><rect x="379.0" y="293" width="2.2" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="381.96" y="303.5" ></text>
+</g>
+<g >
+<title>tick_sched_timer (29,103,977 samples, 0.15%)</title><rect x="778.0" y="341" width="1.8" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="781.01" y="351.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (30,096,770 samples, 0.16%)</title><rect x="732.3" y="453" width="1.9" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="735.31" y="463.5" ></text>
+</g>
+<g >
+<title>srso_alias_safe_ret (33,196,225 samples, 0.17%)</title><rect x="430.9" y="373" width="2.0" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="433.91" y="383.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (676,177,121 samples, 3.51%)</title><rect x="489.5" y="549" width="41.5" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="492.51" y="559.5" >__m..</text>
+</g>
+<g >
+<title>x64_sys_call (35,301,882 samples, 0.18%)</title><rect x="435.1" y="421" width="2.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="438.09" y="431.5" ></text>
+</g>
+<g >
+<title>__check_object_size (28,646,571 samples, 0.15%)</title><rect x="107.2" y="341" width="1.7" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="110.19" y="351.5" ></text>
+</g>
+<g >
+<title>baseline::Book::findLimit (60,917,134 samples, 0.32%)</title><rect x="798.3" y="517" width="3.7" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="801.31" y="527.5" ></text>
+</g>
+<g >
+<title>pick_next_entity.isra.0 (71,511,097 samples, 0.37%)</title><rect x="925.1" y="501" width="4.4" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="928.11" y="511.5" ></text>
+</g>
+<g >
+<title>schedule (66,448,285 samples, 0.35%)</title><rect x="1023.9" y="549" width="4.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1026.87" y="559.5" ></text>
+</g>
+<g >
+<title>__libc_start_call_main (5,957,799,179 samples, 30.96%)</title><rect x="456.2" y="581" width="365.3" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="459.17" y="591.5" >__libc_start_call_main</text>
+</g>
+<g >
+<title>__handle_mm_fault (40,833,026 samples, 0.21%)</title><rect x="533.4" y="485" width="2.5" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="536.44" y="495.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (908,110,734 samples, 4.72%)</title><rect x="571.5" y="341" width="55.7" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="574.49" y="351.5" >x64_s..</text>
+</g>
+<g >
+<title>folio_batch_move_lru (40,833,026 samples, 0.21%)</title><rect x="533.4" y="421" width="2.5" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="536.44" y="431.5" ></text>
+</g>
+<g >
+<title>tty_write_room (33,810,446 samples, 0.18%)</title><rect x="424.5" y="309" width="2.1" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="427.49" y="319.5" ></text>
+</g>
+<g >
+<title>tty_ldisc_deref (29,752,768 samples, 0.15%)</title><rect x="196.7" y="341" width="1.8" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="199.71" y="351.5" ></text>
+</g>
+<g >
+<title>do_user_addr_fault (60,545,334 samples, 0.31%)</title><rect x="218.9" y="565" width="3.7" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="221.88" y="575.5" ></text>
+</g>
+<g >
+<title>__queue_work (569,747,021 samples, 2.96%)</title><rect x="154.7" y="261" width="34.9" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="157.65" y="271.5" >__..</text>
+</g>
+<g >
+<title>try_to_wake_up (71,143,703 samples, 0.37%)</title><rect x="404.8" y="181" width="4.4" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="407.84" y="191.5" ></text>
+</g>
+<g >
+<title>__tty_insert_flip_string_flags (62,080,515 samples, 0.32%)</title><rect x="149.0" y="277" width="3.8" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="152.00" y="287.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (18,328,078 samples, 0.10%)</title><rect x="543.4" y="533" width="1.1" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="546.35" y="543.5" ></text>
+</g>
+<g >
+<title>security_file_permission (36,977,934 samples, 0.19%)</title><rect x="333.7" y="325" width="2.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="336.65" y="335.5" ></text>
+</g>
+<g >
+<title>Book::insert (73,134,667 samples, 0.38%)</title><rect x="1158.7" y="565" width="4.5" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1161.70" y="575.5" ></text>
+</g>
+<g >
+<title>cpuacct_charge (37,169,870 samples, 0.19%)</title><rect x="983.4" y="517" width="2.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="986.44" y="527.5" ></text>
+</g>
+<g >
+<title>Book::marketOrderHelper (173,055,527 samples, 0.90%)</title><rect x="245.1" y="581" width="10.6" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="248.13" y="591.5" ></text>
+</g>
+<g >
+<title>Book::limitHeightDifference (89,396,785 samples, 0.46%)</title><rect x="228.5" y="533" width="5.5" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="231.54" y="543.5" ></text>
+</g>
+<g >
+<title>Limit::getLeftChild (34,895,618 samples, 0.18%)</title><rect x="1154.4" y="533" width="2.2" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="1157.42" y="543.5" ></text>
+</g>
+<g >
+<title>ksys_write (804,732,271 samples, 4.18%)</title><rect x="672.3" y="309" width="49.4" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="675.34" y="319.5" >ksys..</text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (36,788,513 samples, 0.19%)</title><rect x="311.9" y="549" width="2.3" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="314.90" y="559.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (183,407,216 samples, 0.95%)</title><rect x="692.1" y="149" width="11.2" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="695.06" y="159.5" ></text>
+</g>
+<g >
+<title>kick_pool (206,096,219 samples, 1.07%)</title><rect x="703.3" y="149" width="12.6" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="706.30" y="159.5" ></text>
+</g>
+<g >
+<title>vfs_write (804,732,271 samples, 4.18%)</title><rect x="672.3" y="293" width="49.4" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="675.34" y="303.5" >vfs_..</text>
+</g>
+<g >
+<title>do_anonymous_page (55,714,747 samples, 0.29%)</title><rect x="546.3" y="453" width="3.4" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="549.30" y="463.5" ></text>
+</g>
+<g >
+<title>__fdget_pos (28,763,539 samples, 0.15%)</title><rect x="94.6" y="389" width="1.7" height="15.0" fill="rgb(216,55,13)" rx="2" ry="2" />
+<text  x="97.56" y="399.5" ></text>
+</g>
+<g >
+<title>__check_object_size (29,665,897 samples, 0.15%)</title><rect x="684.7" y="245" width="1.9" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="687.73" y="255.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock_irq (32,026,042 samples, 0.17%)</title><rect x="277.7" y="437" width="1.9" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="280.66" y="447.5" ></text>
+</g>
+<g >
+<title>_dl_start (13,908,516 samples, 0.07%)</title><rect x="821.5" y="597" width="0.9" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="824.52" y="607.5" ></text>
+</g>
+<g >
+<title>tty_insert_flip_string_and_push_buffer (177,046,054 samples, 0.92%)</title><rect x="368.1" y="261" width="10.9" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="371.10" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getTotalVolume (29,433,536 samples, 0.15%)</title><rect x="768.0" y="517" width="1.8" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="770.97" y="527.5" ></text>
+</g>
+<g >
+<title>Limit::getRightChild (36,946,140 samples, 0.19%)</title><rect x="1133.3" y="469" width="2.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1136.34" y="479.5" ></text>
+</g>
+<g >
+<title>Limit::getLimitPrice (33,581,616 samples, 0.17%)</title><rect x="1179.5" y="565" width="2.1" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="1182.50" y="575.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (25,599,951 samples, 0.13%)</title><rect x="819.9" y="469" width="1.6" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="822.95" y="479.5" ></text>
+</g>
+<g >
+<title>Limit::getRightChild (30,381,078 samples, 0.16%)</title><rect x="275.8" y="501" width="1.9" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="278.80" y="511.5" ></text>
+</g>
+<g >
+<title>Book::deleteLimit (153,866,058 samples, 0.80%)</title><rect x="272.1" y="565" width="9.4" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="275.09" y="575.5" ></text>
+</g>
+<g >
+<title>asm_exc_page_fault (18,328,078 samples, 0.10%)</title><rect x="543.4" y="517" width="1.1" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="546.35" y="527.5" ></text>
+</g>
+<g >
+<title>baseline::Book::cancelLimitOrder (1,410,349,953 samples, 7.33%)</title><rect x="549.7" y="533" width="86.5" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="552.71" y="543.5" >baseline::..</text>
+</g>
+<g >
+<title>__syscall_cancel (2,149,923,659 samples, 11.17%)</title><rect x="318.5" y="485" width="131.9" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="321.52" y="495.5" >__syscall_cancel</text>
+</g>
+<g >
+<title>void Book::matchOrder&lt;true&gt; (579,703,268 samples, 3.01%)</title><rect x="1150.5" y="613" width="35.6" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1153.52" y="623.5" >voi..</text>
+</g>
+<g >
+<title>baseline::Limit::getBuyOrSell (30,657,970 samples, 0.16%)</title><rect x="796.4" y="501" width="1.9" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="799.43" y="511.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (1,899,172,518 samples, 9.87%)</title><rect x="320.8" y="437" width="116.5" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="323.80" y="447.5" >entry_SYSCALL_..</text>
+</g>
+<g >
+<title>__x64_sys_write (1,695,491,421 samples, 8.81%)</title><rect x="94.6" y="405" width="103.9" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="97.56" y="415.5" >__x64_sys_wr..</text>
+</g>
+<g >
+<title>Book::balance (30,285,897 samples, 0.16%)</title><rect x="241.5" y="501" width="1.9" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="244.52" y="511.5" ></text>
+</g>
+<g >
+<title>ext4_file_write_iter (139,127,457 samples, 0.72%)</title><rect x="1032.0" y="485" width="8.6" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="1035.02" y="495.5" ></text>
+</g>
+<g >
+<title>Book::updateBookEdgeRemove (35,192,955 samples, 0.18%)</title><rect x="1148.4" y="565" width="2.1" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1151.37" y="575.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (207,509,056 samples, 1.08%)</title><rect x="745.6" y="453" width="12.7" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="748.57" y="463.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (30,373,421 samples, 0.16%)</title><rect x="656.2" y="485" width="1.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="659.17" y="495.5" ></text>
+</g>
+<g >
+<title>_IO_fwrite (36,788,513 samples, 0.19%)</title><rect x="311.9" y="565" width="2.3" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="314.90" y="575.5" ></text>
+</g>
+<g >
+<title>tty_insert_flip_string_and_push_buffer (182,393,796 samples, 0.95%)</title><rect x="137.8" y="277" width="11.2" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="140.82" y="287.5" ></text>
+</g>
+<g >
+<title>ttwu_queue_wakelist (86,862,337 samples, 0.45%)</title><rect x="612.5" y="101" width="5.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="615.53" y="111.5" ></text>
+</g>
+<g >
+<title>std::ostream::operator&lt;&lt; (28,941,398 samples, 0.15%)</title><rect x="562.1" y="501" width="1.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="565.06" y="511.5" ></text>
+</g>
+<g >
+<title>do_mmap (13,724,337 samples, 0.07%)</title><rect x="821.5" y="341" width="0.9" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="824.53" y="351.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_write (947,101,674 samples, 4.92%)</title><rect x="670.5" y="437" width="58.1" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="673.48" y="447.5" >_IO_ne..</text>
+</g>
+<g >
+<title>Book::insert (108,504,461 samples, 0.56%)</title><rect x="1128.9" y="549" width="6.7" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1131.95" y="559.5" ></text>
+</g>
+<g >
+<title>ksys_write (1,722,771,862 samples, 8.95%)</title><rect x="325.3" y="373" width="105.6" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="328.26" y="383.5" >ksys_write</text>
+</g>
+<g >
+<title>Book::limitHeightDifference (36,946,140 samples, 0.19%)</title><rect x="1133.3" y="485" width="2.3" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1136.34" y="495.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (29,882,219 samples, 0.16%)</title><rect x="794.6" y="389" width="1.8" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="797.60" y="399.5" ></text>
+</g>
+<g >
+<title>baseline::Book::findLimit (26,776,483 samples, 0.14%)</title><rect x="742.0" y="517" width="1.7" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="745.03" y="527.5" ></text>
+</g>
+<g >
+<title>tty_ldisc_ref_wait (29,807,636 samples, 0.15%)</title><rect x="719.9" y="261" width="1.8" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="722.86" y="271.5" ></text>
+</g>
+<g >
+<title>Book::getLimitHeight (144,519,550 samples, 0.75%)</title><rect x="289.9" y="533" width="8.8" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="292.88" y="543.5" ></text>
+</g>
+<g >
+<title>__list_add_valid_or_report (72,928,921 samples, 0.38%)</title><rect x="361.4" y="293" width="4.5" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="364.39" y="303.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock (108,235,087 samples, 0.56%)</title><rect x="914.0" y="501" width="6.6" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="916.99" y="511.5" ></text>
+</g>
+<g >
+<title>_copy_from_iter (31,084,751 samples, 0.16%)</title><rect x="125.3" y="325" width="1.9" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="128.25" y="335.5" ></text>
+</g>
+<g >
+<title>pty_write (177,046,054 samples, 0.92%)</title><rect x="368.1" y="277" width="10.9" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="371.10" y="287.5" ></text>
+</g>
+<g >
+<title>tty_write (1,549,010,571 samples, 8.05%)</title><rect x="335.9" y="341" width="95.0" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="338.92" y="351.5" >tty_write</text>
+</g>
+<g >
+<title>__virt_addr_valid (37,009,544 samples, 0.19%)</title><rect x="338.0" y="309" width="2.3" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="341.00" y="319.5" ></text>
+</g>
+<g >
+<title>wake_up_process (36,658,442 samples, 0.19%)</title><rect x="409.2" y="213" width="2.2" height="15.0" fill="rgb(213,37,8)" rx="2" ry="2" />
+<text  x="412.20" y="223.5" ></text>
+</g>
+<g >
+<title>syscall_return_via_sysret (30,447,054 samples, 0.16%)</title><rect x="209.9" y="453" width="1.9" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="212.91" y="463.5" ></text>
+</g>
+<g >
+<title>__x64_sys_write (804,732,271 samples, 4.18%)</title><rect x="672.3" y="325" width="49.4" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="675.34" y="335.5" >__x6..</text>
+</g>
+<g >
+<title>__fdget_pos (33,525,840 samples, 0.17%)</title><rect x="327.3" y="357" width="2.1" height="15.0" fill="rgb(216,55,13)" rx="2" ry="2" />
+<text  x="330.32" y="367.5" ></text>
+</g>
+<g >
+<title>Book::balance (133,239,598 samples, 0.69%)</title><rect x="1150.5" y="581" width="8.2" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1153.52" y="591.5" ></text>
+</g>
+<g >
+<title>Book::balance (140,216,328 samples, 0.73%)</title><rect x="1139.8" y="565" width="8.6" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1142.77" y="575.5" ></text>
+</g>
+<g >
+<title>Limit::getRightChild (34,974,414 samples, 0.18%)</title><rect x="1128.9" y="485" width="2.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1131.95" y="495.5" ></text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp; std::__ostream_insert&lt;char, std::char_traits&lt;char&gt; &gt; (151,133,922 samples, 0.79%)</title><rect x="70.1" y="581" width="9.2" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="73.05" y="591.5" ></text>
+</g>
+<g >
+<title>baseline::Book::addLimit (61,881,571 samples, 0.32%)</title><rect x="656.2" y="517" width="3.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="659.17" y="527.5" ></text>
+</g>
+<g >
+<title>__wake_up_common (23,139,397 samples, 0.12%)</title><rect x="122.0" y="309" width="1.4" height="15.0" fill="rgb(248,197,47)" rx="2" ry="2" />
+<text  x="124.97" y="319.5" ></text>
+</g>
+<g >
+<title>__wake_up_common (29,156,210 samples, 0.15%)</title><rect x="582.1" y="213" width="1.8" height="15.0" fill="rgb(248,197,47)" rx="2" ry="2" />
+<text  x="585.07" y="223.5" ></text>
+</g>
+<g >
+<title>Limit::getLeftChild (36,902,961 samples, 0.19%)</title><rect x="1158.7" y="501" width="2.3" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="1161.70" y="511.5" ></text>
+</g>
+<g >
+<title>Book::addLimit (266,566,383 samples, 1.39%)</title><rect x="255.7" y="581" width="16.4" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="258.75" y="591.5" ></text>
+</g>
+<g >
+<title>__libc_write (2,149,923,659 samples, 11.17%)</title><rect x="318.5" y="501" width="131.9" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="321.52" y="511.5" >__libc_write</text>
+</g>
+<g >
+<title>__x64_sys_mmap (13,724,337 samples, 0.07%)</title><rect x="821.5" y="389" width="0.9" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="824.53" y="399.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (28,154,287 samples, 0.15%)</title><rect x="560.3" y="453" width="1.8" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="563.34" y="463.5" ></text>
+</g>
+<g >
+<title>baseline::Book::executeStopOrders (60,577,800 samples, 0.31%)</title><rect x="636.2" y="533" width="3.7" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="639.20" y="543.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (30,299,303 samples, 0.16%)</title><rect x="791.0" y="469" width="1.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="793.96" y="479.5" ></text>
+</g>
+<g >
+<title>yield_task_fair (66,401,233 samples, 0.35%)</title><rect x="1027.9" y="549" width="4.1" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1030.95" y="559.5" ></text>
+</g>
+<g >
+<title>_IO_new_do_write (2,067,407,395 samples, 10.74%)</title><rect x="85.0" y="549" width="126.8" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="88.00" y="559.5" >_IO_new_do_write</text>
+</g>
+<g >
+<title>alloc_pages (35,361,424 samples, 0.18%)</title><rect x="1038.4" y="373" width="2.2" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1041.38" y="383.5" ></text>
+</g>
+<g >
+<title>Book::deleteLimit (212,451,857 samples, 1.10%)</title><rect x="1137.5" y="581" width="13.0" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="1140.50" y="591.5" ></text>
+</g>
+<g >
+<title>try_to_wake_up (114,006,439 samples, 0.59%)</title><rect x="610.9" y="117" width="7.0" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="613.86" y="127.5" ></text>
+</g>
+<g >
+<title>tty_update_time (86,883,586 samples, 0.45%)</title><rect x="189.6" y="325" width="5.3" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="192.59" y="335.5" ></text>
+</g>
+<g >
+<title>Book::balance (173,055,527 samples, 0.90%)</title><rect x="245.1" y="549" width="10.6" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="248.13" y="559.5" ></text>
+</g>
+<g >
+<title>vfs_write (879,699,303 samples, 4.57%)</title><rect x="573.2" y="293" width="54.0" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="576.23" y="303.5" >vfs_w..</text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (40,188,278 samples, 0.21%)</title><rect x="531.0" y="517" width="2.4" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="533.98" y="527.5" ></text>
+</g>
+<g >
+<title>folio_alloc (35,361,424 samples, 0.18%)</title><rect x="1038.4" y="389" width="2.2" height="15.0" fill="rgb(252,217,52)" rx="2" ry="2" />
+<text  x="1041.38" y="399.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (354,838,197 samples, 1.84%)</title><rect x="154.7" y="229" width="21.7" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="157.65" y="239.5" >_..</text>
+</g>
+<g >
+<title>syscall_enter_from_user_mode (25,645,732 samples, 0.13%)</title><rect x="721.7" y="357" width="1.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="724.69" y="367.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (30,373,421 samples, 0.16%)</title><rect x="656.2" y="469" width="1.8" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="659.17" y="479.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (61,664,779 samples, 0.32%)</title><rect x="732.3" y="469" width="3.8" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="735.31" y="479.5" ></text>
+</g>
+<g >
+<title>yield_task_fair (726,972,842 samples, 3.78%)</title><rect x="979.3" y="533" width="44.6" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="982.29" y="543.5" >yiel..</text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (938,439,528 samples, 4.88%)</title><rect x="569.6" y="373" width="57.6" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="572.63" y="383.5" >entry_..</text>
+</g>
+<g >
+<title>std::ostream::sentry::sentry (35,908,861 samples, 0.19%)</title><rect x="309.7" y="581" width="2.2" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="312.69" y="591.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getRightChild (30,909,818 samples, 0.16%)</title><rect x="740.1" y="405" width="1.9" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="743.13" y="415.5" ></text>
+</g>
+<g >
+<title>queue_work_on (389,503,435 samples, 2.02%)</title><rect x="692.1" y="197" width="23.8" height="15.0" fill="rgb(248,200,48)" rx="2" ry="2" />
+<text  x="695.06" y="207.5" >q..</text>
+</g>
+<g >
+<title>baseline::Book::changeBookRoots (28,869,067 samples, 0.15%)</title><rect x="648.9" y="485" width="1.8" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="651.93" y="495.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (31,125,231 samples, 0.16%)</title><rect x="454.3" y="613" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="457.26" y="623.5" ></text>
+</g>
+<g >
+<title>__check_object_size (33,860,563 samples, 0.18%)</title><rect x="335.9" y="325" width="2.1" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="338.92" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (62,626,807 samples, 0.33%)</title><rect x="738.2" y="469" width="3.8" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="741.19" y="479.5" ></text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp; std::__ostream_insert&lt;char, std::char_traits&lt;char&gt; &gt; (54,993,349 samples, 0.29%)</title><rect x="558.7" y="501" width="3.4" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="561.69" y="511.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (3,046,759,183 samples, 15.83%)</title><rect x="853.7" y="597" width="186.9" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="856.72" y="607.5" >do_syscall_64</text>
+</g>
+<g >
+<title>n_tty_write (970,014,398 samples, 5.04%)</title><rect x="130.1" y="325" width="59.5" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="133.11" y="335.5" >n_tty_..</text>
+</g>
+<g >
+<title>entry_SYSRETQ_unsafe_stack (1,025,705,451 samples, 5.33%)</title><rect x="1050.9" y="613" width="62.9" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1053.94" y="623.5" >entry_..</text>
+</g>
+<g >
+<title>update_curr (102,242,270 samples, 0.53%)</title><rect x="957.7" y="485" width="6.2" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="960.66" y="495.5" ></text>
+</g>
+<g >
+<title>schedule (1,452,542,569 samples, 7.55%)</title><rect x="890.2" y="533" width="89.1" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="893.22" y="543.5" >schedule</text>
+</g>
+<g >
+<title>Book::limitHeightDifference (36,231,706 samples, 0.19%)</title><rect x="1161.0" y="517" width="2.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1163.96" y="527.5" ></text>
+</g>
+<g >
+<title>baseline::Limit::getLeftChild (31,508,150 samples, 0.16%)</title><rect x="658.0" y="421" width="2.0" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="661.03" y="431.5" ></text>
+</g>
+<g >
+<title>__hrtimer_run_queues (32,026,042 samples, 0.17%)</title><rect x="277.7" y="453" width="1.9" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="280.66" y="463.5" ></text>
+</g>
+<g >
+<title>__sysvec_hyperv_stimer0 (25,867,721 samples, 0.13%)</title><rect x="745.6" y="405" width="1.6" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="748.57" y="415.5" ></text>
+</g>
+<g >
+<title>__filemap_get_folio (35,361,424 samples, 0.18%)</title><rect x="1038.4" y="421" width="2.2" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="1041.38" y="431.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (804,732,271 samples, 4.18%)</title><rect x="672.3" y="357" width="49.4" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="675.34" y="367.5" >do_s..</text>
+</g>
+<g >
+<title>_raw_spin_lock (245,634,795 samples, 1.28%)</title><rect x="387.7" y="213" width="15.0" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="390.66" y="223.5" ></text>
+</g>
+<g >
+<title>__pv_queued_spin_lock_slowpath (153,116,151 samples, 0.80%)</title><rect x="601.5" y="133" width="9.4" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="604.47" y="143.5" ></text>
+</g>
+</g>
+</svg>

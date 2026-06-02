@@ -1,0 +1,2330 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="470" onload="init(evt)" viewBox="0 0 1200 470" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="470.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >NanoMatch Pool - CPU Profile</text>
+<text id="details" x="10.00" y="453" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="453" > </text>
+<g id="frames">
+<g >
+<title>getLimitHeight (42,835,050 samples, 0.93%)</title><rect x="107.0" y="149" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="109.96" y="159.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="261" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1031.86" y="271.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (42,279,199 samples, 0.92%)</title><rect x="1061.4" y="325" width="10.8" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1064.39" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="165" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="175.5" >b..</text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (514,530,280 samples, 11.15%)</title><rect x="850.9" y="389" width="131.6" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="853.89" y="399.5" >entry_SYSCALL_64..</text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="309" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="319.5" ></text>
+</g>
+<g >
+<title>srso_alias_safe_ret (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="213" width="0.9" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1192.12" y="223.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;int*, std::vector&lt;int, std::allocator&lt;int&gt; &gt; &gt; std::__copy_move_a&lt;true, __gnu_cxx::__normal_iterator&lt;int*, std::vector&lt;int, std::allocator&lt;int&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;int*, std::vector&lt;int, std::allocator&lt;int&gt; &gt; &gt; &gt; (686,722,160 samples, 14.89%)</title><rect x="314.0" y="261" width="175.7" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="317.04" y="271.5" >__gnu_cxx::__normal_it..</text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="165" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="175.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,643,585 samples, 0.95%)</title><rect x="666.5" y="133" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="669.45" y="143.5" ></text>
+</g>
+<g >
+<title>write_histogram_csv (121,893,460 samples, 2.64%)</title><rect x="722.0" y="325" width="31.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="725.00" y="335.5" >wr..</text>
+</g>
+<g >
+<title>exc_page_fault (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="309" width="9.7" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1172.58" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (87,267,356 samples, 1.89%)</title><rect x="655.3" y="197" width="22.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="658.29" y="207.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="213" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="223.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="325" width="10.8" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1107.88" y="335.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (41,837,277 samples, 0.91%)</title><rect x="162.2" y="229" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="165.20" y="239.5" ></text>
+</g>
+<g >
+<title>balance (128,067,008 samples, 2.78%)</title><rect x="172.9" y="325" width="32.8" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="175.90" y="335.5" >ba..</text>
+</g>
+<g >
+<title>insert (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="341" width="10.9" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1097.01" y="351.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (86,416,893 samples, 1.87%)</title><rect x="588.9" y="245" width="22.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="591.90" y="255.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,780,407 samples, 0.93%)</title><rect x="555.7" y="117" width="11.0" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="558.73" y="127.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (41,837,277 samples, 0.91%)</title><rect x="162.2" y="213" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="165.20" y="223.5" ></text>
+</g>
+<g >
+<title>schedule (43,966,555 samples, 0.95%)</title><rect x="960.0" y="325" width="11.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="962.95" y="335.5" ></text>
+</g>
+<g >
+<title>release_pages (40,176,505 samples, 0.87%)</title><rect x="292.7" y="53" width="10.3" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="295.73" y="63.5" ></text>
+</g>
+<g >
+<title>int std::uniform_int_distribution&lt;int&gt;::operator (43,125,224 samples, 0.93%)</title><rect x="303.0" y="293" width="11.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="306.01" y="303.5" ></text>
+</g>
+<g >
+<title>_int_free_chunk (40,176,505 samples, 0.87%)</title><rect x="292.7" y="293" width="10.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="295.73" y="303.5" ></text>
+</g>
+<g >
+<title>ext4_setattr (217,821,368 samples, 4.72%)</title><rect x="875.7" y="245" width="55.7" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="878.68" y="255.5" >ext4_..</text>
+</g>
+<g >
+<title>limitHeightDifference (85,894,785 samples, 1.86%)</title><rect x="95.9" y="309" width="22.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="98.94" y="319.5" >l..</text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="229" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="239.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;int, std::allocator&lt;int&gt; &gt;::erase (686,722,160 samples, 14.89%)</title><rect x="314.0" y="309" width="175.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="317.04" y="319.5" >std::vector&lt;int, std::..</text>
+</g>
+<g >
+<title>addLimit (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="357" width="10.9" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1097.01" y="367.5" ></text>
+</g>
+<g >
+<title>operator[] (43,339,731 samples, 0.94%)</title><rect x="688.7" y="261" width="11.1" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="691.71" y="271.5" ></text>
+</g>
+<g >
+<title>insert (85,397,005 samples, 1.85%)</title><rect x="1017.8" y="341" width="21.8" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1020.77" y="351.5" >i..</text>
+</g>
+<g >
+<title>balance (43,314,111 samples, 0.94%)</title><rect x="140.0" y="325" width="11.1" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="143.03" y="335.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="197" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="207.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,279,199 samples, 0.92%)</title><rect x="1061.4" y="261" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1064.39" y="271.5" ></text>
+</g>
+<g >
+<title>int* std::__copy_move_a1&lt;true, int*, int*&gt; (686,722,160 samples, 14.89%)</title><rect x="314.0" y="245" width="175.7" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="317.04" y="255.5" >int* std::__copy_move_..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,215,208 samples, 0.94%)</title><rect x="577.8" y="165" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="580.85" y="175.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="165" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="175.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (86,868,593 samples, 1.88%)</title><rect x="489.7" y="245" width="22.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="492.69" y="255.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (43,351,013 samples, 0.94%)</title><rect x="151.1" y="213" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="154.11" y="223.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (41,703,773 samples, 0.90%)</title><rect x="227.7" y="213" width="10.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="230.67" y="223.5" ></text>
+</g>
+<g >
+<title>try_push_impl&lt;const TradeEvent&amp;&gt; (41,872,947 samples, 0.91%)</title><rect x="1115.7" y="309" width="10.7" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="1118.69" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (86,890,301 samples, 1.88%)</title><rect x="566.7" y="229" width="22.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="569.68" y="239.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (41,703,773 samples, 0.90%)</title><rect x="227.7" y="245" width="10.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="230.67" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::deleteLimit (86,416,893 samples, 1.87%)</title><rect x="588.9" y="277" width="22.1" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="591.90" y="287.5" >b..</text>
+</g>
+<g >
+<title>getLeftChild (43,293,140 samples, 0.94%)</title><rect x="622.1" y="37" width="11.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="625.12" y="47.5" ></text>
+</g>
+<g >
+<title>__mem_cgroup_charge (42,292,853 samples, 0.92%)</title><rect x="818.0" y="293" width="10.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="821.01" y="303.5" ></text>
+</g>
+<g >
+<title>rdtsc (42,395,222 samples, 0.92%)</title><rect x="249.1" y="373" width="10.9" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="252.11" y="383.5" ></text>
+</g>
+<g >
+<title>release_pages (217,821,368 samples, 4.72%)</title><rect x="875.7" y="181" width="55.7" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="878.68" y="191.5" >relea..</text>
+</g>
+<g >
+<title>insert (42,122,588 samples, 0.91%)</title><rect x="238.3" y="277" width="10.8" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="241.34" y="287.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="133" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="143.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="213" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1031.86" y="223.5" ></text>
+</g>
+<g >
+<title>log (41,872,947 samples, 0.91%)</title><rect x="1115.7" y="357" width="10.7" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1118.69" y="367.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (85,894,785 samples, 1.86%)</title><rect x="95.9" y="229" width="22.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="98.94" y="239.5" >g..</text>
+</g>
+<g >
+<title>deleteLimit (128,067,008 samples, 2.78%)</title><rect x="172.9" y="341" width="32.8" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="175.90" y="351.5" >de..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,494,085 samples, 1.87%)</title><rect x="533.6" y="213" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="223.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="69" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="79.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (128,067,008 samples, 2.78%)</title><rect x="172.9" y="261" width="32.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="175.90" y="271.5" >ge..</text>
+</g>
+<g >
+<title>run_baseline_workload (908,194,347 samples, 19.69%)</title><rect x="489.7" y="325" width="232.3" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="492.69" y="335.5" >run_baseline_workload</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,675,093 samples, 0.95%)</title><rect x="566.7" y="101" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="569.68" y="111.5" ></text>
+</g>
+<g >
+<title>addLimit (128,306,925 samples, 2.78%)</title><rect x="1006.8" y="373" width="32.8" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1009.80" y="383.5" >ad..</text>
+</g>
+<g >
+<title>getLimitHeight (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="181" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1031.86" y="191.5" ></text>
+</g>
+<g >
+<title>schedule (111,650,798 samples, 2.42%)</title><rect x="931.4" y="309" width="28.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="934.39" y="319.5" >sc..</text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (38,366,442 samples, 0.83%)</title><rect x="1179.3" y="357" width="9.8" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1182.30" y="367.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (128,067,008 samples, 2.78%)</title><rect x="172.9" y="293" width="32.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="175.90" y="303.5" >ge..</text>
+</g>
+<g >
+<title>insert (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="277" width="10.9" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1097.01" y="287.5" ></text>
+</g>
+<g >
+<title>try_log (41,872,947 samples, 0.91%)</title><rect x="1115.7" y="341" width="10.7" height="15.0" fill="rgb(252,217,52)" rx="2" ry="2" />
+<text  x="1118.69" y="351.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (41,837,277 samples, 0.91%)</title><rect x="162.2" y="197" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="165.20" y="207.5" ></text>
+</g>
+<g >
+<title>balance (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="341" width="11.0" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1009.80" y="351.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,279,199 samples, 0.92%)</title><rect x="1061.4" y="309" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1064.39" y="319.5" ></text>
+</g>
+<g >
+<title>find (43,375,867 samples, 0.94%)</title><rect x="677.6" y="261" width="11.1" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="680.62" y="271.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="165" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1031.86" y="175.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="117" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="127.5" >b..</text>
+</g>
+<g >
+<title>__brk (40,176,505 samples, 0.87%)</title><rect x="292.7" y="229" width="10.3" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="295.73" y="239.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,835,050 samples, 0.93%)</title><rect x="107.0" y="197" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="109.96" y="207.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (38,366,442 samples, 0.83%)</title><rect x="1179.3" y="341" width="9.8" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1182.30" y="351.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,780,407 samples, 0.93%)</title><rect x="555.7" y="213" width="11.0" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="558.73" y="223.5" ></text>
+</g>
+<g >
+<title>balance (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="309" width="10.7" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1031.86" y="319.5" ></text>
+</g>
+<g >
+<title>__glibc_morecore (40,176,505 samples, 0.87%)</title><rect x="292.7" y="261" width="10.3" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="295.73" y="271.5" ></text>
+</g>
+<g >
+<title>unsigned long std::uniform_int_distribution&lt;int&gt;::_S_nd&lt;unsigned __int128, std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;, unsigned long&gt; (43,125,224 samples, 0.93%)</title><rect x="303.0" y="277" width="11.0" height="15.0" fill="rgb(253,221,53)" rx="2" ry="2" />
+<text  x="306.01" y="287.5" ></text>
+</g>
+<g >
+<title>marketOrderHelper (42,374,354 samples, 0.92%)</title><rect x="996.0" y="373" width="10.8" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="998.96" y="383.5" ></text>
+</g>
+<g >
+<title>do_anonymous_page (42,292,853 samples, 0.92%)</title><rect x="818.0" y="309" width="10.8" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="821.01" y="319.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="293" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="285.02" y="303.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt; std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (38,366,442 samples, 0.83%)</title><rect x="1179.3" y="277" width="9.8" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="1182.30" y="287.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="197" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="207.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="149" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="159.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (43,293,140 samples, 0.94%)</title><rect x="622.1" y="149" width="11.1" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="625.12" y="159.5" ></text>
+</g>
+<g >
+<title>marketOrder (42,374,354 samples, 0.92%)</title><rect x="996.0" y="389" width="10.8" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="998.96" y="399.5" ></text>
+</g>
+<g >
+<title>cancelLimitOrder (42,622,500 samples, 0.92%)</title><rect x="85.0" y="373" width="10.9" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="88.04" y="383.5" ></text>
+</g>
+<g >
+<title>void std::sort&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt; &gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="373" width="10.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="285.02" y="383.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="133" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="143.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::insert (86,743,599 samples, 1.88%)</title><rect x="611.0" y="213" width="22.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="614.01" y="223.5" >b..</text>
+</g>
+<g >
+<title>matchOrder&lt;false&gt; (129,879,406 samples, 2.82%)</title><rect x="129.0" y="373" width="33.2" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="131.97" y="383.5" >ma..</text>
+</g>
+<g >
+<title>x64_sys_call (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="357" width="0.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1192.12" y="367.5" ></text>
+</g>
+<g >
+<title>insert (41,837,277 samples, 0.91%)</title><rect x="162.2" y="277" width="10.7" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="165.20" y="287.5" ></text>
+</g>
+<g >
+<title>generate (729,847,384 samples, 15.82%)</title><rect x="303.0" y="325" width="186.7" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="306.01" y="335.5" >generate</text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;unsigned long, std::pair&lt;unsigned long const, unsigned long&gt;, std::_Select1st&lt;std::pair&lt;unsigned long const, unsigned long&gt; &gt;, std::less&lt;unsigned long&gt;, std::allocator&lt;std::pair&lt;unsigned long const, unsigned long&gt; &gt; &gt;::_M_lower_bound (80,569,679 samples, 1.75%)</title><rect x="732.6" y="261" width="20.6" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="735.57" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (86,743,599 samples, 1.88%)</title><rect x="611.0" y="181" width="22.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="614.01" y="191.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (42,835,050 samples, 0.93%)</title><rect x="107.0" y="213" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="109.96" y="223.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="213" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="223.5" ></text>
+</g>
+<g >
+<title>main (1,800,111,696 samples, 39.02%)</title><rect x="292.7" y="341" width="460.5" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="295.73" y="351.5" >main</text>
+</g>
+<g >
+<title>storeOrder (43,339,731 samples, 0.94%)</title><rect x="688.7" y="293" width="11.1" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="691.71" y="303.5" ></text>
+</g>
+<g >
+<title>entry_SYSRETQ_unsafe_stack (52,612,714 samples, 1.14%)</title><rect x="982.5" y="389" width="13.5" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="985.50" y="399.5" ></text>
+</g>
+<g >
+<title>getHeadOrder (43,243,097 samples, 0.94%)</title><rect x="117.9" y="341" width="11.1" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="120.91" y="351.5" ></text>
+</g>
+<g >
+<title>free_pcppages_bulk (217,821,368 samples, 4.72%)</title><rect x="875.7" y="133" width="55.7" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="878.68" y="143.5" >free_..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (87,267,356 samples, 1.89%)</title><rect x="655.3" y="213" width="22.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="658.29" y="223.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,215,208 samples, 0.94%)</title><rect x="577.8" y="85" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="580.85" y="95.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (85,894,785 samples, 1.86%)</title><rect x="95.9" y="293" width="22.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="98.94" y="303.5" >g..</text>
+</g>
+<g >
+<title>matchOrder&lt;false&gt; (302,581,686 samples, 6.56%)</title><rect x="533.6" y="309" width="77.4" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="536.61" y="319.5" >matchOrd..</text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_stimer0 (41,497,807 samples, 0.90%)</title><rect x="1158.9" y="373" width="10.7" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="1161.95" y="383.5" ></text>
+</g>
+<g >
+<title>do_execveat_common.isra.0 (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="325" width="0.9" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1192.12" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="101" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="111.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,780,407 samples, 0.93%)</title><rect x="555.7" y="165" width="11.0" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="558.73" y="175.5" ></text>
+</g>
+<g >
+<title>balance (41,703,773 samples, 0.90%)</title><rect x="227.7" y="325" width="10.6" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="230.67" y="335.5" ></text>
+</g>
+<g >
+<title>_dl_relocate_object_no_relro (253,494,320 samples, 5.49%)</title><rect x="753.2" y="293" width="64.8" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="756.17" y="303.5" >_dl_rel..</text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (43,675,093 samples, 0.95%)</title><rect x="566.7" y="197" width="11.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="569.68" y="207.5" ></text>
+</g>
+<g >
+<title>balance (42,374,354 samples, 0.92%)</title><rect x="996.0" y="341" width="10.8" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="998.96" y="351.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="261" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (86,743,599 samples, 1.88%)</title><rect x="611.0" y="261" width="22.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="614.01" y="271.5" >b..</text>
+</g>
+<g >
+<title>void std::sort&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt; &gt; (41,840,377 samples, 0.91%)</title><rect x="522.9" y="293" width="10.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="525.91" y="303.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="293" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="303.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="229" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="239.5" ></text>
+</g>
+<g >
+<title>__folio_batch_release (217,821,368 samples, 4.72%)</title><rect x="875.7" y="197" width="55.7" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="878.68" y="207.5" >__fol..</text>
+</g>
+<g >
+<title>marketOrderHelper (170,716,310 samples, 3.70%)</title><rect x="1039.6" y="373" width="43.7" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1042.62" y="383.5" >mark..</text>
+</g>
+<g >
+<title>insert (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="293" width="10.9" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1097.01" y="303.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="229" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="239.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="277" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="287.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="213" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="223.5" ></text>
+</g>
+<g >
+<title>matchOrder&lt;true&gt; (169,904,285 samples, 3.68%)</title><rect x="162.2" y="373" width="43.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="165.20" y="383.5" >matc..</text>
+</g>
+<g >
+<title>do_user_addr_fault (42,292,853 samples, 0.92%)</title><rect x="818.0" y="357" width="10.8" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="821.01" y="367.5" ></text>
+</g>
+<g >
+<title>matchOrder&lt;true&gt; (347,127,569 samples, 7.52%)</title><rect x="611.0" y="309" width="88.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="614.01" y="319.5" >matchOrder..</text>
+</g>
+<g >
+<title>do_syscall_64 (40,176,505 samples, 0.87%)</title><rect x="292.7" y="197" width="10.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="295.73" y="207.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt; std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="229" width="10.7" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="285.02" y="239.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,643,585 samples, 0.95%)</title><rect x="666.5" y="117" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="669.45" y="127.5" ></text>
+</g>
+<g >
+<title>free_pages_and_swap_cache (40,176,505 samples, 0.87%)</title><rect x="292.7" y="69" width="10.3" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="295.73" y="79.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,351,013 samples, 0.94%)</title><rect x="151.1" y="197" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="154.11" y="207.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,215,208 samples, 0.94%)</title><rect x="577.8" y="101" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="580.85" y="111.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (86,890,301 samples, 1.88%)</title><rect x="566.7" y="245" width="22.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="569.68" y="255.5" >b..</text>
+</g>
+<g >
+<title>insert (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="325" width="10.9" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1097.01" y="335.5" ></text>
+</g>
+<g >
+<title>_dl_start (253,494,320 samples, 5.49%)</title><rect x="753.2" y="373" width="64.8" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="756.17" y="383.5" >_dl_start</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,868,593 samples, 1.88%)</title><rect x="489.7" y="213" width="22.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="492.69" y="223.5" >b..</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;int*, std::vector&lt;int, std::allocator&lt;int&gt; &gt; &gt; std::move&lt;__gnu_cxx::__normal_iterator&lt;int*, std::vector&lt;int, std::allocator&lt;int&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;int*, std::vector&lt;int, std::allocator&lt;int&gt; &gt; &gt; &gt; (686,722,160 samples, 14.89%)</title><rect x="314.0" y="277" width="175.7" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="317.04" y="287.5" >__gnu_cxx::__normal_it..</text>
+</g>
+<g >
+<title>getLimitHeight (42,279,199 samples, 0.92%)</title><rect x="1061.4" y="277" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1064.39" y="287.5" ></text>
+</g>
+<g >
+<title>sched_clock_cpu (44,683,730 samples, 0.97%)</title><rect x="948.5" y="277" width="11.5" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="951.52" y="287.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (128,067,008 samples, 2.78%)</title><rect x="172.9" y="197" width="32.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="175.90" y="207.5" >ge..</text>
+</g>
+<g >
+<title>insert (41,837,277 samples, 0.91%)</title><rect x="162.2" y="293" width="10.7" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="165.20" y="303.5" ></text>
+</g>
+<g >
+<title>exc_page_fault (42,937,817 samples, 0.93%)</title><rect x="271.0" y="293" width="11.0" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="274.04" y="303.5" ></text>
+</g>
+<g >
+<title>deleteLimit (85,894,785 samples, 1.86%)</title><rect x="95.9" y="341" width="22.0" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="98.94" y="351.5" >d..</text>
+</g>
+<g >
+<title>insert (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="261" width="10.9" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1097.01" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::rr_rotate (43,293,140 samples, 0.94%)</title><rect x="622.1" y="53" width="11.1" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="625.12" y="63.5" ></text>
+</g>
+<g >
+<title>insert (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="325" width="10.7" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1031.86" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,810,788 samples, 0.93%)</title><rect x="600.1" y="53" width="10.9" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="603.06" y="63.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt; std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (38,366,442 samples, 0.83%)</title><rect x="1179.3" y="293" width="9.8" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="1182.30" y="303.5" ></text>
+</g>
+<g >
+<title>addLimit (83,826,361 samples, 1.82%)</title><rect x="227.7" y="357" width="21.4" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="230.67" y="367.5" >a..</text>
+</g>
+<g >
+<title>handle_mm_fault (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="277" width="9.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1172.58" y="287.5" ></text>
+</g>
+<g >
+<title>addLimit (128,306,925 samples, 2.78%)</title><rect x="1006.8" y="357" width="32.8" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1009.80" y="367.5" >ad..</text>
+</g>
+<g >
+<title>BenchStats (anonymous namespace)::run_workload&lt;(anonymous namespace)::SlabBookAdapter&gt; (854,470,860 samples, 18.52%)</title><rect x="74.2" y="389" width="218.5" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="77.17" y="399.5" >BenchStats (anonymous namesp..</text>
+</g>
+<g >
+<title>do_truncate (217,821,368 samples, 4.72%)</title><rect x="875.7" y="277" width="55.7" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="878.68" y="287.5" >do_tr..</text>
+</g>
+<g >
+<title>_start (2,053,606,016 samples, 44.52%)</title><rect x="292.7" y="389" width="525.3" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="295.73" y="399.5" >_start</text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (686,722,160 samples, 14.89%)</title><rect x="314.0" y="213" width="175.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="317.04" y="223.5" >__memmove_avx_unaligne..</text>
+</g>
+<g >
+<title>handle_mm_fault (42,937,817 samples, 0.93%)</title><rect x="271.0" y="261" width="11.0" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="274.04" y="271.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="245" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="255.5" ></text>
+</g>
+<g >
+<title>addLimit (130,060,750 samples, 2.82%)</title><rect x="611.0" y="293" width="33.3" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="614.01" y="303.5" >ad..</text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="277" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="287.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,868,593 samples, 1.88%)</title><rect x="489.7" y="181" width="22.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="492.69" y="191.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (42,404,898 samples, 0.92%)</title><rect x="194.8" y="181" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="197.81" y="191.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (43,675,093 samples, 0.95%)</title><rect x="566.7" y="213" width="11.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="569.68" y="223.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,780,407 samples, 0.93%)</title><rect x="555.7" y="181" width="11.0" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="558.73" y="191.5" ></text>
+</g>
+<g >
+<title>__x64_sys_execve (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="341" width="0.9" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1192.12" y="351.5" ></text>
+</g>
+<g >
+<title>do_filp_open (217,821,368 samples, 4.72%)</title><rect x="875.7" y="309" width="55.7" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="878.68" y="319.5" >do_fi..</text>
+</g>
+<g >
+<title>std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt;::vector (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="389" width="9.7" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="1172.58" y="399.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (85,894,785 samples, 1.86%)</title><rect x="95.9" y="261" width="22.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="98.94" y="271.5" >g..</text>
+</g>
+<g >
+<title>balance (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="325" width="11.1" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1020.77" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (42,780,407 samples, 0.93%)</title><rect x="555.7" y="245" width="11.0" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="558.73" y="255.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="133" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="143.5" ></text>
+</g>
+<g >
+<title>_M_find_before_node (43,375,867 samples, 0.94%)</title><rect x="677.6" y="229" width="11.1" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="680.62" y="239.5" ></text>
+</g>
+<g >
+<title>std::map&lt;unsigned long, unsigned long, std::less&lt;unsigned long&gt;, std::allocator&lt;std::pair&lt;unsigned long const, unsigned long&gt; &gt; &gt;::lower_bound (80,569,679 samples, 1.75%)</title><rect x="732.6" y="293" width="20.6" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="735.57" y="303.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="293" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="303.5" ></text>
+</g>
+<g >
+<title>insert (41,837,277 samples, 0.91%)</title><rect x="162.2" y="325" width="10.7" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="165.20" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (86,743,599 samples, 1.88%)</title><rect x="611.0" y="229" width="22.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="614.01" y="239.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="117" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="127.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,279,199 samples, 0.92%)</title><rect x="1061.4" y="293" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1064.39" y="303.5" ></text>
+</g>
+<g >
+<title>baseline::Book::addLimit (216,164,793 samples, 4.69%)</title><rect x="533.6" y="277" width="55.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="536.61" y="287.5" >basel..</text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="277" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="287.5" ></text>
+</g>
+<g >
+<title>free_unref_page_commit (217,821,368 samples, 4.72%)</title><rect x="875.7" y="149" width="55.7" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="878.68" y="159.5" >free_..</text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="245" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="255.5" ></text>
+</g>
+<g >
+<title>charge_memcg (42,292,853 samples, 0.92%)</title><rect x="818.0" y="277" width="10.8" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="821.01" y="287.5" ></text>
+</g>
+<g >
+<title>unsigned long* std::__uninitialized_copy_a&lt;__gnu_cxx::__normal_iterator&lt;unsigned long const*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;unsigned long const*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, unsigned long*, unsigned long&gt; (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="373" width="9.7" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1172.58" y="383.5" ></text>
+</g>
+<g >
+<title>int const&amp; std::max&lt;int&gt; (43,507,586 samples, 0.94%)</title><rect x="500.8" y="69" width="11.1" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="503.79" y="79.5" ></text>
+</g>
+<g >
+<title>getLeftChild (42,810,788 samples, 0.93%)</title><rect x="600.1" y="37" width="10.9" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="603.06" y="47.5" ></text>
+</g>
+<g >
+<title>addLimit (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="373" width="10.9" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1097.01" y="383.5" ></text>
+</g>
+<g >
+<title>asm_exc_page_fault (42,292,853 samples, 0.92%)</title><rect x="818.0" y="389" width="10.8" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="821.01" y="399.5" ></text>
+</g>
+<g >
+<title>void std::__sort&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (38,366,442 samples, 0.83%)</title><rect x="1179.3" y="373" width="9.8" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1182.30" y="383.5" ></text>
+</g>
+<g >
+<title>systrim (40,176,505 samples, 0.87%)</title><rect x="292.7" y="277" width="10.3" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="295.73" y="287.5" ></text>
+</g>
+<g >
+<title>deleteLimit (43,351,013 samples, 0.94%)</title><rect x="151.1" y="341" width="11.1" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="154.11" y="351.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;unsigned long, std::pair&lt;unsigned long const, unsigned long&gt;, std::_Select1st&lt;std::pair&lt;unsigned long const, unsigned long&gt; &gt;, std::less&lt;unsigned long&gt;, std::allocator&lt;std::pair&lt;unsigned long const, unsigned long&gt; &gt; &gt;::_S_right (39,889,653 samples, 0.86%)</title><rect x="743.0" y="245" width="10.2" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="745.97" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,494,085 samples, 1.87%)</title><rect x="533.6" y="229" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="239.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,507,586 samples, 0.94%)</title><rect x="500.8" y="101" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="503.79" y="111.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,351,013 samples, 0.94%)</title><rect x="151.1" y="277" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="154.11" y="287.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="245" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="255.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (41,703,773 samples, 0.90%)</title><rect x="227.7" y="309" width="10.6" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="230.67" y="319.5" ></text>
+</g>
+<g >
+<title>all (4,613,268,438 samples, 100%)</title><rect x="10.0" y="421" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (41,703,773 samples, 0.90%)</title><rect x="227.7" y="261" width="10.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="230.67" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (43,450,459 samples, 0.94%)</title><rect x="611.0" y="149" width="11.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="614.01" y="159.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (128,067,008 samples, 2.78%)</title><rect x="172.9" y="309" width="32.8" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="175.90" y="319.5" >li..</text>
+</g>
+<g >
+<title>baseline::Book::deleteLimit (86,868,593 samples, 1.88%)</title><rect x="489.7" y="277" width="22.2" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="492.69" y="287.5" >b..</text>
+</g>
+<g >
+<title>__libc_start_main_impl (1,800,111,696 samples, 39.02%)</title><rect x="292.7" y="373" width="460.5" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="295.73" y="383.5" >__libc_start_main_impl</text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="197" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="207.5" ></text>
+</g>
+<g >
+<title>_M_find_before_node (43,339,731 samples, 0.94%)</title><rect x="688.7" y="229" width="11.1" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="691.71" y="239.5" ></text>
+</g>
+<g >
+<title>addLimit (83,826,361 samples, 1.82%)</title><rect x="227.7" y="341" width="21.4" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="230.67" y="351.5" >a..</text>
+</g>
+<g >
+<title>insert (42,122,588 samples, 0.91%)</title><rect x="238.3" y="325" width="10.8" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="241.34" y="335.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,835,050 samples, 0.93%)</title><rect x="107.0" y="165" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="109.96" y="175.5" ></text>
+</g>
+<g >
+<title>do_vmi_align_munmap (40,176,505 samples, 0.87%)</title><rect x="292.7" y="133" width="10.3" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="295.73" y="143.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="277" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="285.02" y="287.5" ></text>
+</g>
+<g >
+<title>insert (42,122,588 samples, 0.91%)</title><rect x="238.3" y="293" width="10.8" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="241.34" y="303.5" ></text>
+</g>
+<g >
+<title>marketOrderHelper (43,351,013 samples, 0.94%)</title><rect x="151.1" y="357" width="11.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="154.11" y="367.5" ></text>
+</g>
+<g >
+<title>baseline::Book::marketOrderHelper (130,351,221 samples, 2.83%)</title><rect x="644.3" y="293" width="33.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="647.27" y="303.5" >ba..</text>
+</g>
+<g >
+<title>modifyLimitOrder (42,391,963 samples, 0.92%)</title><rect x="1126.4" y="389" width="10.8" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1129.40" y="399.5" ></text>
+</g>
+<g >
+<title>baseline::Book::marketOrderHelper (129,854,675 samples, 2.81%)</title><rect x="489.7" y="293" width="33.2" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="492.69" y="303.5" >ba..</text>
+</g>
+<g >
+<title>getLimitHeight (128,067,008 samples, 2.78%)</title><rect x="172.9" y="277" width="32.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="175.90" y="287.5" >ge..</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt; std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="213" width="10.7" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="285.02" y="223.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,835,050 samples, 0.93%)</title><rect x="107.0" y="181" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="109.96" y="191.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (86,743,599 samples, 1.88%)</title><rect x="611.0" y="245" width="22.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="614.01" y="255.5" >b..</text>
+</g>
+<g >
+<title>std::map&lt;unsigned long, unsigned long, std::less&lt;unsigned long&gt;, std::allocator&lt;std::pair&lt;unsigned long const, unsigned long&gt; &gt; &gt;::operator[] (80,569,679 samples, 1.75%)</title><rect x="732.6" y="309" width="20.6" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="735.57" y="319.5" ></text>
+</g>
+<g >
+<title>std::unordered_map&lt;int, baseline::Limit*, std::hash&lt;int&gt;, std::equal_to&lt;int&gt;, std::allocator&lt;std::pair&lt;int const, baseline::Limit*&gt; &gt; &gt;::operator[] (43,317,151 samples, 0.94%)</title><rect x="633.2" y="245" width="11.1" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="636.19" y="255.5" ></text>
+</g>
+<g >
+<title>__x64_sys_sched_yield (155,617,353 samples, 3.37%)</title><rect x="931.4" y="341" width="39.8" height="15.0" fill="rgb(209,18,4)" rx="2" ry="2" />
+<text  x="934.39" y="351.5" >__x..</text>
+</g>
+<g >
+<title>do_sys_openat2 (217,821,368 samples, 4.72%)</title><rect x="875.7" y="325" width="55.7" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="878.68" y="335.5" >do_sy..</text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="149" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="159.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (87,267,356 samples, 1.89%)</title><rect x="655.3" y="261" width="22.3" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="658.29" y="271.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="165" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="175.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (86,494,085 samples, 1.87%)</title><rect x="533.6" y="261" width="22.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="536.61" y="271.5" >b..</text>
+</g>
+<g >
+<title>do_sched_yield (111,650,798 samples, 2.42%)</title><rect x="931.4" y="325" width="28.6" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="934.39" y="335.5" >do..</text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="309" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="319.5" ></text>
+</g>
+<g >
+<title>__x64_sys_brk (40,176,505 samples, 0.87%)</title><rect x="292.7" y="165" width="10.3" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="295.73" y="175.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,868,593 samples, 1.88%)</title><rect x="489.7" y="229" width="22.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="492.69" y="239.5" >b..</text>
+</g>
+<g >
+<title>x64_sys_call (373,438,721 samples, 8.09%)</title><rect x="875.7" y="357" width="95.5" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="878.68" y="367.5" >x64_sys_call</text>
+</g>
+<g >
+<title>ctx_resched (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="245" width="0.9" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1192.12" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,868,593 samples, 1.88%)</title><rect x="489.7" y="149" width="22.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="492.69" y="159.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (41,703,773 samples, 0.90%)</title><rect x="227.7" y="293" width="10.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="230.67" y="303.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="341" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="285.02" y="351.5" ></text>
+</g>
+<g >
+<title>deleteLimit (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="357" width="10.8" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="1107.88" y="367.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,840,377 samples, 0.91%)</title><rect x="522.9" y="229" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="525.91" y="239.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,780,407 samples, 0.93%)</title><rect x="555.7" y="101" width="11.0" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="558.73" y="111.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (43,351,013 samples, 0.94%)</title><rect x="151.1" y="309" width="11.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="154.11" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (86,868,593 samples, 1.88%)</title><rect x="489.7" y="261" width="22.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="492.69" y="271.5" >b..</text>
+</g>
+<g >
+<title>asm_exc_page_fault (42,937,817 samples, 0.93%)</title><rect x="271.0" y="309" width="11.0" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="274.04" y="319.5" ></text>
+</g>
+<g >
+<title>perf_event_exec (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="261" width="0.9" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1192.12" y="271.5" ></text>
+</g>
+<g >
+<title>BenchStats::~BenchStats (40,176,505 samples, 0.87%)</title><rect x="292.7" y="325" width="10.3" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="295.73" y="335.5" ></text>
+</g>
+<g >
+<title>tlb_finish_mmu (40,176,505 samples, 0.87%)</title><rect x="292.7" y="101" width="10.3" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="295.73" y="111.5" ></text>
+</g>
+<g >
+<title>x64_sys_call (40,176,505 samples, 0.87%)</title><rect x="292.7" y="181" width="10.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="295.73" y="191.5" ></text>
+</g>
+<g >
+<title>elf_machine_rela (253,494,320 samples, 5.49%)</title><rect x="753.2" y="261" width="64.8" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="756.17" y="271.5" >elf_mac..</text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (43,215,208 samples, 0.94%)</title><rect x="577.8" y="181" width="11.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="580.85" y="191.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,351,013 samples, 0.94%)</title><rect x="151.1" y="245" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="154.11" y="255.5" ></text>
+</g>
+<g >
+<title>load_elf_binary (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="293" width="0.9" height="15.0" fill="rgb(223,83,20)" rx="2" ry="2" />
+<text  x="1192.12" y="303.5" ></text>
+</g>
+<g >
+<title>balance (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="341" width="10.8" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1107.88" y="351.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="229" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="239.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="213" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="223.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (41,703,773 samples, 0.90%)</title><rect x="227.7" y="229" width="10.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="230.67" y="239.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (42,292,853 samples, 0.92%)</title><rect x="818.0" y="325" width="10.8" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="821.01" y="335.5" ></text>
+</g>
+<g >
+<title>__x64_sys_openat (217,821,368 samples, 4.72%)</title><rect x="875.7" y="341" width="55.7" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="878.68" y="351.5" >__x64..</text>
+</g>
+<g >
+<title>__schedule (111,650,798 samples, 2.42%)</title><rect x="931.4" y="293" width="28.6" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="934.39" y="303.5" >__..</text>
+</g>
+<g >
+<title>addLimit (41,837,277 samples, 0.91%)</title><rect x="162.2" y="357" width="10.7" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="165.20" y="367.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,675,093 samples, 0.95%)</title><rect x="566.7" y="69" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="569.68" y="79.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="309" width="11.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1020.77" y="319.5" ></text>
+</g>
+<g >
+<title>_dl_start_final (253,494,320 samples, 5.49%)</title><rect x="753.2" y="357" width="64.8" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="756.17" y="367.5" >_dl_sta..</text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="245" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="255.5" ></text>
+</g>
+<g >
+<title>__list_del_entry_valid_or_report (66,967,068 samples, 1.45%)</title><rect x="931.4" y="277" width="17.1" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="934.39" y="287.5" ></text>
+</g>
+<g >
+<title>find (43,375,867 samples, 0.94%)</title><rect x="677.6" y="277" width="11.1" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="680.62" y="287.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,215,208 samples, 0.94%)</title><rect x="577.8" y="133" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="580.85" y="143.5" ></text>
+</g>
+<g >
+<title>getLeftChild (42,374,354 samples, 0.92%)</title><rect x="996.0" y="309" width="10.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="998.96" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,868,593 samples, 1.88%)</title><rect x="489.7" y="117" width="22.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="492.69" y="127.5" >b..</text>
+</g>
+<g >
+<title>limitHeightDifference (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="229" width="10.9" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1097.01" y="239.5" ></text>
+</g>
+<g >
+<title>addLimit (216,164,793 samples, 4.69%)</title><rect x="533.6" y="293" width="55.3" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="536.61" y="303.5" >addLi..</text>
+</g>
+<g >
+<title>addLimit (86,528,393 samples, 1.88%)</title><rect x="129.0" y="357" width="22.1" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="131.97" y="367.5" >a..</text>
+</g>
+<g >
+<title>baseline::Book::rl_rotate (43,293,140 samples, 0.94%)</title><rect x="622.1" y="69" width="11.1" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="625.12" y="79.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,840,377 samples, 0.91%)</title><rect x="522.9" y="213" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="525.91" y="223.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="181" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="191.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="149" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="159.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (42,374,354 samples, 0.92%)</title><rect x="996.0" y="325" width="10.8" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="998.96" y="335.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="293" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="303.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (87,267,356 samples, 1.89%)</title><rect x="655.3" y="149" width="22.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="658.29" y="159.5" >b..</text>
+</g>
+<g >
+<title>__mod_lruvec_page_state (42,937,817 samples, 0.93%)</title><rect x="271.0" y="197" width="11.0" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="274.04" y="207.5" ></text>
+</g>
+<g >
+<title>void std::__sort&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="357" width="10.7" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="285.02" y="367.5" ></text>
+</g>
+<g >
+<title>std::_Rb_tree&lt;unsigned long, std::pair&lt;unsigned long const, unsigned long&gt;, std::_Select1st&lt;std::pair&lt;unsigned long const, unsigned long&gt; &gt;, std::less&lt;unsigned long&gt;, std::allocator&lt;std::pair&lt;unsigned long const, unsigned long&gt; &gt; &gt;::lower_bound (80,569,679 samples, 1.75%)</title><rect x="732.6" y="277" width="20.6" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="735.57" y="287.5" ></text>
+</g>
+<g >
+<title>path_openat (217,821,368 samples, 4.72%)</title><rect x="875.7" y="293" width="55.7" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="878.68" y="303.5" >path_..</text>
+</g>
+<g >
+<title>_M_find_node (43,339,731 samples, 0.94%)</title><rect x="688.7" y="245" width="11.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="691.71" y="255.5" ></text>
+</g>
+<g >
+<title>perf_ctx_enable (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="229" width="0.9" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="1192.12" y="239.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,494,085 samples, 1.87%)</title><rect x="533.6" y="181" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="191.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::insert (43,215,208 samples, 0.94%)</title><rect x="577.8" y="213" width="11.1" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="580.85" y="223.5" ></text>
+</g>
+<g >
+<title>void std::allocator_traits&lt;std::allocator&lt;unsigned long&gt; &gt;::construct&lt;unsigned long, unsigned long&gt; (42,937,817 samples, 0.93%)</title><rect x="271.0" y="341" width="11.0" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="274.04" y="351.5" ></text>
+</g>
+<g >
+<title>__mod_memcg_lruvec_state (42,937,817 samples, 0.93%)</title><rect x="271.0" y="181" width="11.0" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="274.04" y="191.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (42,937,817 samples, 0.93%)</title><rect x="271.0" y="245" width="11.0" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="274.04" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::marketOrder (129,854,675 samples, 2.81%)</title><rect x="489.7" y="309" width="33.2" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="492.69" y="319.5" >ba..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,675,093 samples, 0.95%)</title><rect x="566.7" y="165" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="569.68" y="175.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,780,407 samples, 0.93%)</title><rect x="555.7" y="197" width="11.0" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="558.73" y="207.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="197" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="207.5" ></text>
+</g>
+<g >
+<title>marketOrderHelper (129,137,882 samples, 2.80%)</title><rect x="95.9" y="357" width="33.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="98.94" y="367.5" >ma..</text>
+</g>
+<g >
+<title>matchOrder&lt;true&gt; (168,581,841 samples, 3.65%)</title><rect x="1083.3" y="389" width="43.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1086.28" y="399.5" >matc..</text>
+</g>
+<g >
+<title>marketOrderHelper (128,067,008 samples, 2.78%)</title><rect x="172.9" y="357" width="32.8" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="175.90" y="367.5" >ma..</text>
+</g>
+<g >
+<title>baseline::Book::insert (86,743,599 samples, 1.88%)</title><rect x="611.0" y="197" width="22.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="614.01" y="207.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,215,208 samples, 0.94%)</title><rect x="577.8" y="117" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="580.85" y="127.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="261" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="271.5" ></text>
+</g>
+<g >
+<title>void std::sort&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt; &gt; (38,366,442 samples, 0.83%)</title><rect x="1179.3" y="389" width="9.8" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1182.30" y="399.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="133" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="143.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (128,067,008 samples, 2.78%)</title><rect x="172.9" y="229" width="32.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="175.90" y="239.5" >ge..</text>
+</g>
+<g >
+<title>baseline::Book::marketOrderHelper (86,416,893 samples, 1.87%)</title><rect x="588.9" y="293" width="22.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="591.90" y="303.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="197" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1031.86" y="207.5" ></text>
+</g>
+<g >
+<title>deleteLimit (42,374,354 samples, 0.92%)</title><rect x="996.0" y="357" width="10.8" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="998.96" y="367.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="245" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="285.02" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,675,093 samples, 0.95%)</title><rect x="566.7" y="85" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="569.68" y="95.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (85,894,785 samples, 1.86%)</title><rect x="95.9" y="245" width="22.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="98.94" y="255.5" >g..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,810,788 samples, 0.93%)</title><rect x="600.1" y="69" width="10.9" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="603.06" y="79.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,494,085 samples, 1.87%)</title><rect x="533.6" y="197" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="207.5" >b..</text>
+</g>
+<g >
+<title>exc_page_fault (42,292,853 samples, 0.92%)</title><rect x="818.0" y="373" width="10.8" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="821.01" y="383.5" ></text>
+</g>
+<g >
+<title>asm_exc_page_fault (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="325" width="9.7" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1172.58" y="335.5" ></text>
+</g>
+<g >
+<title>__rcu_read_unlock (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="245" width="9.7" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="1172.58" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (86,494,085 samples, 1.87%)</title><rect x="533.6" y="245" width="22.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="536.61" y="255.5" >b..</text>
+</g>
+<g >
+<title>tlb_batch_pages_flush (40,176,505 samples, 0.87%)</title><rect x="292.7" y="85" width="10.3" height="15.0" fill="rgb(234,133,32)" rx="2" ry="2" />
+<text  x="295.73" y="95.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,868,593 samples, 1.88%)</title><rect x="489.7" y="165" width="22.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="492.69" y="175.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::insert (43,293,140 samples, 0.94%)</title><rect x="622.1" y="117" width="11.1" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="625.12" y="127.5" ></text>
+</g>
+<g >
+<title>balance (41,837,277 samples, 0.91%)</title><rect x="162.2" y="261" width="10.7" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="165.20" y="271.5" ></text>
+</g>
+<g >
+<title>elf_dynamic_do_Rela (253,494,320 samples, 5.49%)</title><rect x="753.2" y="277" width="64.8" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="756.17" y="287.5" >elf_dyn..</text>
+</g>
+<g >
+<title>__libc_start_call_main (1,800,111,696 samples, 39.02%)</title><rect x="292.7" y="357" width="460.5" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="295.73" y="367.5" >__libc_start_call_main</text>
+</g>
+<g >
+<title>__handle_mm_fault (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="261" width="9.7" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="1172.58" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,675,093 samples, 0.95%)</title><rect x="566.7" y="117" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="569.68" y="127.5" ></text>
+</g>
+<g >
+<title>addLimit (41,837,277 samples, 0.91%)</title><rect x="162.2" y="341" width="10.7" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="165.20" y="351.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (87,267,356 samples, 1.89%)</title><rect x="655.3" y="165" width="22.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="658.29" y="175.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,675,093 samples, 0.95%)</title><rect x="566.7" y="133" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="569.68" y="143.5" ></text>
+</g>
+<g >
+<title>_M_insert_unique_node (43,317,151 samples, 0.94%)</title><rect x="633.2" y="213" width="11.1" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="636.19" y="223.5" ></text>
+</g>
+<g >
+<title>dl_main (253,494,320 samples, 5.49%)</title><rect x="753.2" y="325" width="64.8" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="756.17" y="335.5" >dl_main</text>
+</g>
+<g >
+<title>int std::uniform_int_distribution&lt;int&gt;::operator (43,125,224 samples, 0.93%)</title><rect x="303.0" y="309" width="11.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="306.01" y="319.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt;::push_back (42,937,817 samples, 0.93%)</title><rect x="271.0" y="373" width="11.0" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="274.04" y="383.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="325" width="11.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1009.80" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,675,093 samples, 0.95%)</title><rect x="566.7" y="181" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="569.68" y="191.5" ></text>
+</g>
+<g >
+<title>modifyLimitOrder (169,908,182 samples, 3.68%)</title><rect x="205.7" y="373" width="43.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="208.65" y="383.5" >modi..</text>
+</g>
+<g >
+<title>_ZSt12construct_atImJmEQaant20is_unbounded_array_vIT_ErqXgsnwcvPvLi0E_S0_pispcl7declvalIT0_EEEEEPS0_S3_DpOS2_ (42,937,817 samples, 0.93%)</title><rect x="271.0" y="325" width="11.0" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="274.04" y="335.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="261" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (43,293,140 samples, 0.94%)</title><rect x="622.1" y="85" width="11.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="625.12" y="95.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="85" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="95.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="181" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="191.5" ></text>
+</g>
+<g >
+<title>deleteLimit (85,018,721 samples, 1.84%)</title><rect x="1050.5" y="357" width="21.7" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="1053.46" y="367.5" >d..</text>
+</g>
+<g >
+<title>cancelLimitOrder (86,247,600 samples, 1.87%)</title><rect x="828.8" y="389" width="22.1" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="831.83" y="399.5" >c..</text>
+</g>
+<g >
+<title>baseline::Book::balance (43,450,459 samples, 0.94%)</title><rect x="611.0" y="165" width="11.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="614.01" y="175.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;SyntheticOrder, std::allocator&lt;SyntheticOrder&gt; &gt;::size (43,319,768 samples, 0.94%)</title><rect x="260.0" y="373" width="11.0" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="262.96" y="383.5" ></text>
+</g>
+<g >
+<title>__do_sys_brk (40,176,505 samples, 0.87%)</title><rect x="292.7" y="149" width="10.3" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="295.73" y="159.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="309" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="285.02" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (87,267,356 samples, 1.89%)</title><rect x="655.3" y="229" width="22.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="658.29" y="239.5" >b..</text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="261" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="285.02" y="271.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="117" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="127.5" ></text>
+</g>
+<g >
+<title>addLimit (86,528,393 samples, 1.88%)</title><rect x="129.0" y="341" width="22.1" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="131.97" y="351.5" >a..</text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (40,176,505 samples, 0.87%)</title><rect x="292.7" y="213" width="10.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="295.73" y="223.5" ></text>
+</g>
+<g >
+<title>int const&amp; std::max&lt;int&gt; (43,188,050 samples, 0.94%)</title><rect x="544.7" y="165" width="11.0" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="547.69" y="175.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="181" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="191.5" >b..</text>
+</g>
+<g >
+<title>rdtsc (86,790,040 samples, 1.88%)</title><rect x="699.8" y="309" width="22.2" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="702.80" y="319.5" >r..</text>
+</g>
+<g >
+<title>notify_change (217,821,368 samples, 4.72%)</title><rect x="875.7" y="261" width="55.7" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="878.68" y="271.5" >notif..</text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;::operator (43,125,224 samples, 0.93%)</title><rect x="303.0" y="261" width="11.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="306.01" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,450,459 samples, 0.94%)</title><rect x="611.0" y="133" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="614.01" y="143.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (129,670,708 samples, 2.81%)</title><rect x="555.7" y="261" width="33.2" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="558.73" y="271.5" >ba..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,507,586 samples, 0.94%)</title><rect x="500.8" y="85" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="503.79" y="95.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="213" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1097.01" y="223.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="149" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="159.5" ></text>
+</g>
+<g >
+<title>do_user_addr_fault (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="293" width="9.7" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="1172.58" y="303.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (470,334,065 samples, 10.20%)</title><rect x="850.9" y="373" width="120.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="853.89" y="383.5" >do_syscall_64</text>
+</g>
+<g >
+<title>free_unref_page_list (217,821,368 samples, 4.72%)</title><rect x="875.7" y="165" width="55.7" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="878.68" y="175.5" >free_..</text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="165" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="175.5" ></text>
+</g>
+<g >
+<title>insert (41,837,277 samples, 0.91%)</title><rect x="162.2" y="309" width="10.7" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="165.20" y="319.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="293" width="10.7" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1031.86" y="303.5" ></text>
+</g>
+<g >
+<title>rdtsc (43,300,510 samples, 0.94%)</title><rect x="1072.2" y="357" width="11.1" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1075.21" y="367.5" ></text>
+</g>
+<g >
+<title>syscall_enter_from_user_mode (44,196,215 samples, 0.96%)</title><rect x="971.2" y="373" width="11.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="974.20" y="383.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (86,416,893 samples, 1.87%)</title><rect x="588.9" y="261" width="22.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="591.90" y="271.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,868,593 samples, 1.88%)</title><rect x="489.7" y="197" width="22.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="492.69" y="207.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="149" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="159.5" ></text>
+</g>
+<g >
+<title>baseline::Book::deleteLimit (87,267,356 samples, 1.89%)</title><rect x="655.3" y="277" width="22.3" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="658.29" y="287.5" >b..</text>
+</g>
+<g >
+<title>balance (42,279,199 samples, 0.92%)</title><rect x="1061.4" y="341" width="10.8" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1064.39" y="351.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,404,898 samples, 0.92%)</title><rect x="194.8" y="165" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="197.81" y="175.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt;::~vector (40,176,505 samples, 0.87%)</title><rect x="292.7" y="309" width="10.3" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="295.73" y="319.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,351,013 samples, 0.94%)</title><rect x="151.1" y="229" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="154.11" y="239.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,840,377 samples, 0.91%)</title><rect x="522.9" y="261" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="525.91" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (43,293,140 samples, 0.94%)</title><rect x="622.1" y="101" width="11.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="625.12" y="111.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (41,837,277 samples, 0.91%)</title><rect x="162.2" y="165" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="165.20" y="175.5" ></text>
+</g>
+<g >
+<title>unmap_region.constprop.0 (40,176,505 samples, 0.87%)</title><rect x="292.7" y="117" width="10.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="295.73" y="127.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="341" width="9.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1172.58" y="351.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,351,013 samples, 0.94%)</title><rect x="151.1" y="261" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="154.11" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,450,459 samples, 0.94%)</title><rect x="611.0" y="101" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="614.01" y="111.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="277" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="287.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="181" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="191.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="277" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1031.86" y="287.5" ></text>
+</g>
+<g >
+<title>perf-exec (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="405" width="0.9" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1192.12" y="415.5" ></text>
+</g>
+<g >
+<title>rdtsc (126,346,225 samples, 2.74%)</title><rect x="1137.2" y="389" width="32.4" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1140.25" y="399.5" >rd..</text>
+</g>
+<g >
+<title>compute_stats (41,840,377 samples, 0.91%)</title><rect x="522.9" y="309" width="10.7" height="15.0" fill="rgb(246,193,46)" rx="2" ry="2" />
+<text  x="525.91" y="319.5" ></text>
+</g>
+<g >
+<title>bench_tool (4,609,822,107 samples, 99.93%)</title><rect x="10.0" y="405" width="1179.1" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >bench_tool</text>
+</g>
+<g >
+<title>balance (43,351,013 samples, 0.94%)</title><rect x="151.1" y="325" width="11.1" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="154.11" y="335.5" ></text>
+</g>
+<g >
+<title>insert (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="309" width="10.9" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1097.01" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,780,407 samples, 0.93%)</title><rect x="555.7" y="133" width="11.0" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="558.73" y="143.5" ></text>
+</g>
+<g >
+<title>_M_locate (43,375,867 samples, 0.94%)</title><rect x="677.6" y="245" width="11.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="680.62" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (87,267,356 samples, 1.89%)</title><rect x="655.3" y="181" width="22.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="658.29" y="191.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (128,067,008 samples, 2.78%)</title><rect x="172.9" y="245" width="32.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="175.90" y="255.5" >ge..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (42,780,407 samples, 0.93%)</title><rect x="555.7" y="149" width="11.0" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="558.73" y="159.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;::operator+ (41,840,377 samples, 0.91%)</title><rect x="522.9" y="181" width="10.7" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="525.91" y="191.5" ></text>
+</g>
+<g >
+<title>__sbrk (40,176,505 samples, 0.87%)</title><rect x="292.7" y="245" width="10.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="295.73" y="255.5" ></text>
+</g>
+<g >
+<title>_dl_relocate_object (253,494,320 samples, 5.49%)</title><rect x="753.2" y="309" width="64.8" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="756.17" y="319.5" >_dl_rel..</text>
+</g>
+<g >
+<title>getLimitHeight (42,404,898 samples, 0.92%)</title><rect x="194.8" y="149" width="10.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="197.81" y="159.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (85,894,785 samples, 1.86%)</title><rect x="95.9" y="277" width="22.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="98.94" y="287.5" >g..</text>
+</g>
+<g >
+<title>operator[] (43,339,731 samples, 0.94%)</title><rect x="688.7" y="277" width="11.1" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="691.71" y="287.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="229" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="239.5" >b..</text>
+</g>
+<g >
+<title>marketOrder (129,137,882 samples, 2.80%)</title><rect x="95.9" y="373" width="33.1" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="98.94" y="383.5" >ma..</text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="101" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="111.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;int, std::allocator&lt;int&gt; &gt;::_M_erase (686,722,160 samples, 14.89%)</title><rect x="314.0" y="293" width="175.7" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="317.04" y="303.5" >std::vector&lt;int, std::..</text>
+</g>
+<g >
+<title>operator[] (43,317,151 samples, 0.94%)</title><rect x="633.2" y="229" width="11.1" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="636.19" y="239.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="149" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="159.5" >b..</text>
+</g>
+<g >
+<title>do_user_addr_fault (42,937,817 samples, 0.93%)</title><rect x="271.0" y="277" width="11.0" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="274.04" y="287.5" ></text>
+</g>
+<g >
+<title>matchOrder&lt;false&gt; (299,023,235 samples, 6.48%)</title><rect x="1006.8" y="389" width="76.5" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="1009.80" y="399.5" >matchOrd..</text>
+</g>
+<g >
+<title>getLimitHeight (42,909,920 samples, 0.93%)</title><rect x="1006.8" y="293" width="11.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1009.80" y="303.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,450,459 samples, 0.94%)</title><rect x="611.0" y="85" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="614.01" y="95.5" ></text>
+</g>
+<g >
+<title>unsigned long* std::uninitialized_copy&lt;__gnu_cxx::__normal_iterator&lt;unsigned long const*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, unsigned long*&gt; (38,017,228 samples, 0.82%)</title><rect x="1169.6" y="357" width="9.7" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1172.58" y="367.5" ></text>
+</g>
+<g >
+<title>execute (42,986,082 samples, 0.93%)</title><rect x="511.9" y="277" width="11.0" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="514.91" y="287.5" ></text>
+</g>
+<g >
+<title>truncate_pagecache (217,821,368 samples, 4.72%)</title><rect x="875.7" y="229" width="55.7" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="878.68" y="239.5" >trunc..</text>
+</g>
+<g >
+<title>getLimitHeight (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="245" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1031.86" y="255.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (42,292,853 samples, 0.92%)</title><rect x="818.0" y="341" width="10.8" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="821.01" y="351.5" ></text>
+</g>
+<g >
+<title>baseline::Book::insert (43,293,140 samples, 0.94%)</title><rect x="622.1" y="133" width="11.1" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="625.12" y="143.5" ></text>
+</g>
+<g >
+<title>balance (85,894,785 samples, 1.86%)</title><rect x="95.9" y="325" width="22.0" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="98.94" y="335.5" >b..</text>
+</g>
+<g >
+<title>balance (42,507,881 samples, 0.92%)</title><rect x="1094.0" y="245" width="10.9" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1097.01" y="255.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 64ul, 312ul, 156ul, 31ul, 13043109905998158313ul, 29ul, 6148914691236517205ul, 17ul, 8202884508482404352ul, 37ul, 18444473444759240704ul, 43ul, 6364136223846793005ul&gt;::_M_gen_rand (43,125,224 samples, 0.93%)</title><rect x="303.0" y="245" width="11.0" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="306.01" y="255.5" ></text>
+</g>
+<g >
+<title>inc (41,872,947 samples, 0.91%)</title><rect x="1115.7" y="293" width="10.7" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="1118.69" y="303.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="373" width="0.9" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1192.12" y="383.5" ></text>
+</g>
+<g >
+<title>unsigned long&amp; std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt;::emplace_back&lt;unsigned long&gt; (42,937,817 samples, 0.93%)</title><rect x="271.0" y="357" width="11.0" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="274.04" y="367.5" ></text>
+</g>
+<g >
+<title>_dl_sysdep_start (253,494,320 samples, 5.49%)</title><rect x="753.2" y="341" width="64.8" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="756.17" y="351.5" >_dl_sys..</text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,882,563 samples, 0.91%)</title><rect x="282.0" y="325" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="285.02" y="335.5" ></text>
+</g>
+<g >
+<title>getRightChild (42,404,898 samples, 0.92%)</title><rect x="194.8" y="133" width="10.9" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="197.81" y="143.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="197" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="207.5" >b..</text>
+</g>
+<g >
+<title>findLimit (43,375,867 samples, 0.94%)</title><rect x="677.6" y="293" width="11.1" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="680.62" y="303.5" ></text>
+</g>
+<g >
+<title>folio_add_new_anon_rmap (42,937,817 samples, 0.93%)</title><rect x="271.0" y="213" width="11.0" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="274.04" y="223.5" ></text>
+</g>
+<g >
+<title>enqueue (41,872,947 samples, 0.91%)</title><rect x="1115.7" y="325" width="10.7" height="15.0" fill="rgb(254,225,53)" rx="2" ry="2" />
+<text  x="1118.69" y="335.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,868,593 samples, 1.88%)</title><rect x="489.7" y="133" width="22.2" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="492.69" y="143.5" >b..</text>
+</g>
+<g >
+<title>marketOrderHelper (84,132,734 samples, 1.82%)</title><rect x="1104.9" y="373" width="21.5" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1107.88" y="383.5" >m..</text>
+</g>
+<g >
+<title>insert (42,122,588 samples, 0.91%)</title><rect x="238.3" y="261" width="10.8" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="241.34" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="53" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="63.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,840,377 samples, 0.91%)</title><rect x="522.9" y="245" width="10.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="525.91" y="255.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (128,067,008 samples, 2.78%)</title><rect x="172.9" y="213" width="32.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="175.90" y="223.5" >ge..</text>
+</g>
+<g >
+<title>baseline::Book::setLimit (43,317,151 samples, 0.94%)</title><rect x="633.2" y="261" width="11.1" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="636.19" y="271.5" ></text>
+</g>
+<g >
+<title>truncate_inode_pages_range (217,821,368 samples, 4.72%)</title><rect x="875.7" y="213" width="55.7" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="878.68" y="223.5" >trunc..</text>
+</g>
+<g >
+<title>getLimitHeight (42,038,584 samples, 0.91%)</title><rect x="1028.9" y="229" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1031.86" y="239.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (41,837,277 samples, 0.91%)</title><rect x="162.2" y="245" width="10.7" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="165.20" y="255.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,215,208 samples, 0.94%)</title><rect x="577.8" y="149" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="580.85" y="159.5" ></text>
+</g>
+<g >
+<title>limitHeightDifference (43,314,111 samples, 0.94%)</title><rect x="140.0" y="309" width="11.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="143.03" y="319.5" ></text>
+</g>
+<g >
+<title>insert (42,122,588 samples, 0.91%)</title><rect x="238.3" y="309" width="10.8" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="241.34" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::addLimit (130,060,750 samples, 2.82%)</title><rect x="611.0" y="277" width="33.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="614.01" y="287.5" >ba..</text>
+</g>
+<g >
+<title>entry_SYSCALL_64_after_hwframe (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="389" width="0.9" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1192.12" y="399.5" ></text>
+</g>
+<g >
+<title>baseline::Book::balance (43,215,208 samples, 0.94%)</title><rect x="577.8" y="197" width="11.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="580.85" y="207.5" ></text>
+</g>
+<g >
+<title>int* std::__copy_move_a2&lt;true, int*, int*, int*&gt; (686,722,160 samples, 14.89%)</title><rect x="314.0" y="229" width="175.7" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="317.04" y="239.5" >int* std::__copy_move_..</text>
+</g>
+<g >
+<title>begin_new_exec (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="277" width="0.9" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1192.12" y="287.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (38,366,442 samples, 0.83%)</title><rect x="1179.3" y="309" width="9.8" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1182.30" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (42,780,407 samples, 0.93%)</title><rect x="555.7" y="229" width="11.0" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="558.73" y="239.5" ></text>
+</g>
+<g >
+<title>void std::__sort&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,840,377 samples, 0.91%)</title><rect x="522.9" y="277" width="10.7" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="525.91" y="287.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="261" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="271.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,450,459 samples, 0.94%)</title><rect x="611.0" y="117" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="614.01" y="127.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (86,416,893 samples, 1.87%)</title><rect x="588.9" y="85" width="22.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="591.90" y="95.5" >b..</text>
+</g>
+<g >
+<title>getLimitHeight (43,314,111 samples, 0.94%)</title><rect x="140.0" y="213" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="143.03" y="223.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,358,421 samples, 0.94%)</title><rect x="1017.8" y="181" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1020.77" y="191.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (41,837,277 samples, 0.91%)</title><rect x="162.2" y="181" width="10.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="165.20" y="191.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (42,259,787 samples, 0.92%)</title><rect x="1104.9" y="133" width="10.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="1107.88" y="143.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (43,351,013 samples, 0.94%)</title><rect x="151.1" y="293" width="11.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="154.11" y="303.5" ></text>
+</g>
+<g >
+<title>bprm_execve (3,446,331 samples, 0.07%)</title><rect x="1189.1" y="309" width="0.9" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1192.12" y="319.5" ></text>
+</g>
+<g >
+<title>baseline::Book::limitHeightDifference (87,267,356 samples, 1.89%)</title><rect x="655.3" y="245" width="22.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="658.29" y="255.5" >b..</text>
+</g>
+<g >
+<title>baseline::Book::insert (43,293,140 samples, 0.94%)</title><rect x="622.1" y="165" width="11.1" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="625.12" y="175.5" ></text>
+</g>
+<g >
+<title>void std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (38,366,442 samples, 0.83%)</title><rect x="1179.3" y="325" width="9.8" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1182.30" y="335.5" ></text>
+</g>
+<g >
+<title>getLimitHeight (41,703,773 samples, 0.90%)</title><rect x="227.7" y="277" width="10.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="230.67" y="287.5" ></text>
+</g>
+<g >
+<title>getRightChild (43,450,459 samples, 0.94%)</title><rect x="611.0" y="69" width="11.1" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="614.01" y="79.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt; std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;unsigned long*, std::vector&lt;unsigned long, std::allocator&lt;unsigned long&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (41,840,377 samples, 0.91%)</title><rect x="522.9" y="197" width="10.7" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="525.91" y="207.5" ></text>
+</g>
+<g >
+<title>__free_one_page (217,821,368 samples, 4.72%)</title><rect x="875.7" y="117" width="55.7" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="878.68" y="127.5" >__fre..</text>
+</g>
+<g >
+<title>do_anonymous_page (42,937,817 samples, 0.93%)</title><rect x="271.0" y="229" width="11.0" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="274.04" y="239.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="165" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="175.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,675,093 samples, 0.95%)</title><rect x="566.7" y="149" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="569.68" y="159.5" ></text>
+</g>
+<g >
+<title>baseline::Book::getLimitHeight (43,306,035 samples, 0.94%)</title><rect x="533.6" y="37" width="11.1" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="536.61" y="47.5" ></text>
+</g>
+</g>
+</svg>
