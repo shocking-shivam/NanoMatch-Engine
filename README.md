@@ -417,10 +417,3 @@ sudo perf stat -e cycles,instructions,L1-dcache-load-misses \
 | `rdtsc` hardware cycle counter | `rdtsc.hpp` — `rdtscp` + runtime GHz detection |
 | AVL self-balancing BST | `Book.cpp` — buy/sell price level trees |
 | Price-time priority matching | `Book.cpp` — FIFO queues per price level |
-
-
-
-    subgraph Asynchronous Telemetry
-        D -->|memory_order_release| G[[Lock-Free SPSC Queue]]
-        G -->|Background I/O thread| H[(trades.csv)]
-    end
