@@ -22,15 +22,11 @@ set(Headers
     ./Limit_Order_Book/Book.hpp
     ./Limit_Order_Book/Limit.hpp
     ./Limit_Order_Book/Order.hpp
-    ./Process_Orders/OrderPipeline.hpp
-    ./Generate_Orders/GenerateOrders.hpp
 )
 set(Sources
     ./Limit_Order_Book/Book.cpp
     ./Limit_Order_Book/Limit.cpp
     ./Limit_Order_Book/Order.cpp
-    ./Process_Orders/OrderPipeline.cpp
-    ./Generate_Orders/GenerateOrders.cpp
 )
 
 # Lean binary flags for the matching engine (Release / Profile only).
@@ -64,6 +60,7 @@ apply_engine_lean_flags(${PROJECT_NAME}_lib)
 
 # Define the executable target
 add_executable(${PROJECT_NAME} main.cpp)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR})
 apply_engine_lean_flags(${PROJECT_NAME})
 apply_engine_lean_link(${PROJECT_NAME})
 

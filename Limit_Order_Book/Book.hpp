@@ -10,6 +10,7 @@
 #include <vector>
 #include <random>
 #include <unordered_set>
+#include <cstdint>
 
 #include "trade_logger.hpp"
 
@@ -124,6 +125,8 @@ public:
     void marketOrder(int orderId, bool buyOrSell, int shares);
     void addLimitOrder(int orderId, bool buyOrSell, int shares, int limitPrice);
     void cancelLimitOrder(int orderId);
+    void addOrder(uint64_t orderId, bool buyOrSell, uint32_t shares, uint32_t price);
+    void cancelOrder(uint64_t orderId);
     void modifyLimitOrder(int orderId, int newShares, int newLimit);
     void addStopOrder(int orderId, bool buyOrSell, int shares, int stopPrice);
     void cancelStopOrder(int orderId);

@@ -1,63 +1,25 @@
-#include "./Generate_Orders/GenerateOrders.hpp"
-#include "./Process_Orders/OrderPipeline.hpp"
-#include "./Limit_Order_Book/Book.hpp"
-#include "./Limit_Order_Book/Limit.hpp"
-#include "./Limit_Order_Book/Order.hpp"
-#include "./Limit_Order_Book/trade_logger.hpp"
 #include <iostream>
-#include <fstream>
-#include <vector>
-#include <chrono>
+#include "Limit_Order_Book/Book.hpp"
+#include "itch_parser/itch_parser.hpp"
+#include "Limit_Order_Book/rdtsc.hpp" 
 
 int main() {
-    TradeLogger logger("docs/trades.csv");
-    logger.start();
-
-    Book* book = new Book(&logger);
-
-    OrderPipeline orderPipeline(book);
-
-    // GenerateOrders generateOrders(book);
-
-    // generateOrders.createInitialOrders(10000, 300);
-
-    {
-        std::ifstream initialOrders("Generate_Orders/initialOrders.txt");
-        if (!initialOrders) {
-            std::cerr << "Error: Could not open initialOrders.txt" << std::endl;
-            delete book;
-            logger.stop();
-            return 1;
-        }
-    }
-    orderPipeline.processOrdersFromFile("Generate_Orders/initialOrders.txt");
-
-    // generateOrders.createOrders(5000000);
-
-    {
-        std::ifstream orders("Orders.txt");
-        if (!orders) {
-            std::cerr << "Error: Could not open Orders.txt" << std::endl;
-            delete book;
-            logger.stop();
-            return 1;
-        }
-    }
-
-    // Start measuring time
-    auto start = std::chrono::high_resolution_clock::now();
-
-    orderPipeline.processOrdersFromFile("Orders.txt");
-
-    // Stop measuring time
-    auto stop = std::chrono::high_resolution_clock::now();
-
-    // Calculate the duration
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
-
-    std::cout << "Time taken to process orders: " << duration.count() << " microseconds" << std::endl;
-
-    delete book;
-    logger.stop();
+    Book matching_engine;
+    
+    std::cout << "Initializing NanoMatch Engine...\n";
+    std::cout << "Loading real-world order data into Memory Pool...\n";
+    
+    uint64_t start_time = rdtsc();
+    
+    ItchParser::processFile("data/small_sample.itch", matching_engine);
+    
+    uint64_t end_time = rdtsc();
+    
+    std::cout << "Engine processing complete.\n";
+    
+    // Convert cycles to milliseconds (Assuming roughly ~3.0 GHz CPU)
+    double time_taken_ms = (end_time - start_time) / 3000000.0; 
+    std::cout << "Time taken: " << time_taken_ms << " ms\n";
+    
     return 0;
 }

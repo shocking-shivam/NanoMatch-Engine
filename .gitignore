@@ -8,7 +8,7 @@ perf.data*
 !docs/*.csv
 !docs/*.svg
 
-data/
+data/*
+!data/small_sample.itch
 generate_itch
-itch_parser
 docs/bench.csv.stl

@@ -306,6 +306,16 @@ void Book::addLimitOrder(int orderId, bool buyOrSell, int shares, int limitPrice
     }
 }
 
+void Book::addOrder(uint64_t orderId, bool buyOrSell, uint32_t shares, uint32_t price)
+{
+    addLimitOrder(static_cast<int>(orderId), buyOrSell, static_cast<int>(shares), static_cast<int>(price));
+}
+
+void Book::cancelOrder(uint64_t orderId)
+{
+    cancelLimitOrder(static_cast<int>(orderId));
+}
+
 // Delete a limit order from the book
 void Book::cancelLimitOrder(int orderId)
 {
