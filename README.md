@@ -7,6 +7,28 @@ stripping runtime branch prediction, preventing false sharing, and
 utilizing lock-free synchronization, NanoMatch is engineered to
 High-Frequency Trading (HFT) standards.
 
+```mermaid
+graph TD
+    subgraph Data Ingestion
+        A[(NASDAQ ITCH 5.0 Data)] -->|mmap zero-copy| B(ITCH Parser)
+    end
+
+    subgraph Memory Management
+        C[O'1' Slab Memory Pool] -.->|Pop pointer in 4 cycles| D
+    end
+
+    subgraph NanoMatch Core
+        B -->|Add / Cancel / Execute| D{Matching Engine}
+        D <-->|O'1' Lookup| E[Flat Price Arrays]
+        D <-->|Cache Hit| F[40-byte Order Structs]
+    end
+
+    subgraph Asynchronous Telemetry
+        D -->|memory_order_release| G[[Lock-Free SPSC Queue]]
+        G -->|Background I/O thread| H[(trades.csv)]
+    end   
+```
+
 ---
 
 ## ⚡ Architecture & Optimizations
@@ -412,29 +434,6 @@ sudo perf stat -e cycles,instructions,L1-dcache-load-misses \
 | Lock-free concurrency and memory ordering | `spsc_queue.hpp` — `release`/`acquire` |
 | False sharing prevention | `alignas(64)` on `head_`, `tail_`, `Limit` fields |
 | Branch misprediction and pipeline hazards | `template<bool IsBuy>` dispatch in `Book.cpp` |
-
-
-```mermaid
-graph TD
-    subgraph Data Ingestion
-        A[(NASDAQ ITCH 5.0 Data)] -->|mmap zero-copy| B(ITCH Parser)
-    end
-
-    subgraph Memory Management
-        C[O'1' Slab Memory Pool] -.->|Pop pointer in 4 cycles| D
-    end
-
-    subgraph NanoMatch Core
-        B -->|Add / Cancel / Execute| D{Matching Engine}
-        D <-->|O'1' Lookup| E[Flat Price Arrays]
-        D <-->|Cache Hit| F[40-byte Order Structs]
-    end
-
-    subgraph Asynchronous Telemetry
-        D -->|memory_order_release| G[[Lock-Free SPSC Queue]]
-        G -->|Background I/O thread| H[(trades.csv)]
-    end   
-```
 | Struct packing | `Order` packed to 40 bytes — 1 order per cache line |
 | Zero-copy I/O via `mmap` | `itch_parser/itch_parser.hpp` |
 | `rdtsc` hardware cycle counter | `rdtsc.hpp` — `rdtscp` + runtime GHz detection |
