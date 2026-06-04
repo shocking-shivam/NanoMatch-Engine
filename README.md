@@ -389,6 +389,8 @@ cmake --build build -j$(nproc)
 mkdir -p docs
 taskset -c 0 ./build/bench/bench_tool
 
+sudo perf stat -e cycles,instructions,L1-dcache-load-misses ./build/bench/bench_tool
+
 # Main engine with real ITCH data
 ./build/LimitOrderBook
 
